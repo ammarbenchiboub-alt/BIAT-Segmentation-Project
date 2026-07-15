@@ -1,0 +1,16 @@
+competence: "UI / UX"
+description: >
+  Conception d'une identite visuelle professionnelle adaptee a un usage
+  bancaire interne, coherente sur l'ensemble de l'application.
+technologies:
+  - CSS personnalise (theming avance sur Streamlit)
+  - charte graphique (couleurs, typographie, composants)
+  - ergonomie de tableaux de donnees denses
+fichiers:
+  - ui/styles.py
+  - app.py
+exemples_concrets:
+  - "Palette et composants aux couleurs officielles BIAT (bleu/orange)."
+  - "Cartes de navigation cliquables, bandeau de marque, codes couleur semantiques (alertes)."
+  - "Coherence visuelle maintenue sur les 8 pages de l'application."
+niveau: "Redesign complet valide iterativement (retours utilisateur pris en compte)."

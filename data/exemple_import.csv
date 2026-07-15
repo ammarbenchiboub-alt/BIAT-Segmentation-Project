@@ -1,0 +1,9 @@
+Marche,Profession,Age,MMM,VRD,Nationalite,Residence
+PART,Autre,45,0,600000,Tunisienne,Oui
+PART,Magistrats,45,500,0,Tunisienne,Oui
+PRO,Avocats,35,0,0,Tunisienne,Oui
+PRO,Commercant,40,90,3,Tunisienne,Oui
+TRE,Medecins generalistes,40,0,20000,Tunisienne,Non
+ENR,Autre,40,0,70000,Autre,Non
+PART,Autre,-5,abc,10,Tunisienne,Oui
+XXX,Autre,30,1000,1000,Tunisienne,Oui

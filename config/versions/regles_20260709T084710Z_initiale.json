@@ -1,0 +1,679 @@
+{
+  "meta": {
+    "source": "Note BIAT a l'ensemble du personnel N 2023-06 du 14/02/2023 - Nouvelle segmentation de la clientele PBD",
+    "reference_anterieure": "Note au reseau N 2020-02 du 06/02/2020",
+    "version": "1.0.0",
+    "unite_seuils": "DT (dinars tunisiens). 1 mD = 1000 DT.",
+    "logique_mmm_vrd": "OR",
+    "marches_geres": [
+      "PART",
+      "PRO",
+      "TRE",
+      "ENR"
+    ],
+    "marches_exclus": [
+      "TPME",
+      "PME",
+      "TPE"
+    ],
+    "champs_simulation_individuelle": [
+      "Marche",
+      "Profession",
+      "Age",
+      "MMM",
+      "VRD",
+      "Nationalite",
+      "Residence"
+    ],
+    "champ_optionnel_8": "EpargnantDeposantExclusif (bool, defaut False) - active les sous-segments PART 'Epargnants et deposants exclusifs' (Affluent/Classe Moyenne/Grand Public). Ajoute le 2026-07-07.",
+    "champs_non_utilises": [
+      "Revenus mensuels nets declaratifs",
+      "Nombre d'operations"
+    ],
+    "avertissement": "Aucune regle inventee. Seuils issus des pages 3,4,5,7,9,10,11,12,13 du PDF officiel 'Nvlle Segmentation' et annexes 4 (p.20) et 5 (p.22). Voir _notes_conflits."
+  },
+  "_notes_conflits": {
+    "classe_moyenne_salaries_vrd": "RESOLU (confirme sur le PDF officiel, pages 5 et 9) : VRD >=5 mD et <100 mD pour Les salaries (PART, Classe Moyenne). Valeur retenue et confirmee : >=5000 et <100000 DT.",
+    "fortunes_vrd": "VRD >=500 mD (confirme, pages 5 et 7).",
+    "champs_hors_scope": "Sous-segments dependant de flags hors des 7 champs initiaux du projet (secteur public, client dormant, nombre d'operations) conserves pour parametrage mais non actives en simulation individuelle. Le moteur retient le sous-segment principal du palier. EXCEPTION depuis le 2026-07-07 : 'epargnant/deposant exclusif' (PART uniquement, 3 paliers : Affluent/Classe Moyenne/Grand Public) est desormais active via le 8e champ optionnel EpargnantDeposantExclusif (voir meta.champ_optionnel_8), a la demande de l'utilisateur.",
+    "revenu_tre_enr": "La table TRE a 4 criteres OU distincts : Profession | Revenus | MMM | Total avoirs (colonnes separees, confirme pages 4 et 12 du PDF officiel). Revenus est hors scope (Revenus mensuels nets declaratifs non utilise en simulation individuelle). Seuls MMM et VRD sont appliques. ENR n'a pas de colonne Revenus du tout (seulement MMM et VRD).",
+    "tre_mmm_vs_revenu_CORRIGE": "Corrige le 2026-07-07 suite a la comparaison des colonnes Revenus vs MMM du tableau TRE (pages 4 et 12) : colonne MMM = Premium >=2,5 mD, Potentiel moyen >=1 mD, Faible potentiel <1 mD (et non les valeurs de la colonne Revenus : 10 mD/5 mD/<5 mD, utilisees par erreur dans une version anterieure). Regles corrigees : TRE_PREMIUM_MONTANT.mmm.min=2500, TRE_POTENTIEL_MOYEN.mmm.min=1000, TRE_FAIBLE_POTENTIEL.mmm.max=1000.",
+    "pro_professionnels_hors_pl_A_CONFIRMER": "La table PRO/Haut de Gamme (pages 5 et 9) precise pour 'Professionnels' : 'Professions a potentiel hors PL : liste en annexe 4', en plus des seuils montant (MMM>=100mD OU VRD>=200mD). Le PDF officiel (page 20, 'Liste exhaustive des Professions a potentiel') montre 2 listes annexe4 distinctes et nommees : (a) boite 'Professionnels HG' (Medecins, Pharmaciens, Opticiens-lunetiers, Avocats, Experts-comptables, Ingenieurs, Architectes -- entierement incluse dans la liste PL annexe5, donc round-trip inerte si utilisee ici car deja captee par PRO_HDG_PL priorite 20) ; (b) boite 'Salaries : Affluents/TRE Premium/JDA Potentiel' (Magistrats, Enseignants universitaires, Medecins fonction publique, Chefs de mission diplomatique, Hauts fonctionnaires, Pilotes -- non couverte par la PL, donne un effet reel). Le titre de la boite (b) ne mentionne pas explicitement 'PRO Professionnels' parmi ses usages, mais c'est la seule liste qui rend la mention 'hors PL' de la page 5 non vide. AJOUTE le 2026-07-07 : regle PRO_HDG_PROFESSIONNELS_POTENTIEL (priorite 29, avant regle montant a 30) utilisant provisoirement professions_a_potentiel_salaries_annexe4. EN ATTENTE DE VALIDATION par l'utilisateur aupres de son encadrante academique : confirmer si Magistrats/Enseignants universitaires/Hauts fonctionnaires/Pilotes doivent bien qualifier automatiquement Haut de Gamme sur le marche PRO independamment du montant, ou si cette regle doit etre retiree/modifiee."
+  },
+  "listes_professions": {
+    "professions_a_potentiel_HG_annexe4": [
+      "Medecins generalistes",
+      "Medecins dentistes",
+      "Medecins veterinaires",
+      "Medecins specialistes",
+      "Pharmaciens",
+      "Biologistes et assimiles",
+      "Opticiens-lunetiers",
+      "Avocats",
+      "Experts-comptables",
+      "Ingenieurs",
+      "Architectes et urbanistes"
+    ],
+    "professions_a_potentiel_salaries_annexe4": [
+      "Medecins generalistes",
+      "Medecins dentistes",
+      "Medecins veterinaires",
+      "Medecins (fonction publique et assimiles en cas de resident)",
+      "Pharmaciens",
+      "Biologistes et assimiles",
+      "Magistrats",
+      "Ingenieurs",
+      "Experts-comptables",
+      "Architectes et urbanistes",
+      "Enseignants universitaires",
+      "Chefs de mission diplomatique et assimiles",
+      "Hauts fonctionnaires de l'administration publique (en cas de resident)",
+      "Pilotes et officiers de pont"
+    ],
+    "professions_liberales_strategiques_annexe5": [
+      "Medecins specialistes",
+      "Medecins generalistes",
+      "Medecins dentistes",
+      "Medecins veterinaires",
+      "Pharmaciens",
+      "Biologistes et assimiles",
+      "Experts-comptables"
+    ],
+    "professions_liberales_autres_annexe5": [
+      "Architectes et urbanistes",
+      "Ingenieurs",
+      "Medecins de la fonction publique et assimiles",
+      "Opticiens-lunetiers",
+      "Professions paramedicales",
+      "Avocats",
+      "Huissiers de justice, notaires, experts judiciaires et assimiles",
+      "Conseillers et consultants",
+      "Transitaires et commissionnaires"
+    ],
+    "professions_liberales_annexe5_toutes": [
+      "Medecins specialistes",
+      "Medecins generalistes",
+      "Medecins dentistes",
+      "Medecins veterinaires",
+      "Pharmaciens",
+      "Biologistes et assimiles",
+      "Experts-comptables",
+      "Architectes et urbanistes",
+      "Ingenieurs",
+      "Medecins de la fonction publique et assimiles",
+      "Opticiens-lunetiers",
+      "Professions paramedicales",
+      "Avocats",
+      "Huissiers de justice, notaires, experts judiciaires et assimiles",
+      "Conseillers et consultants",
+      "Transitaires et commissionnaires"
+    ],
+    "professions_commercants_artisans": [
+      "Commercant",
+      "Artisan"
+    ],
+    "profession_etudiant": [
+      "Etudiant"
+    ]
+  },
+  "marches": {
+    "PART": {
+      "libelle": "Particuliers",
+      "categorie_client": "Particulier",
+      "regles": [
+        {
+          "id": "PART_HDG_FORTUNES",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Fortunes",
+          "priorite": 10,
+          "conditions": {
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": 500000,
+              "max": null
+            },
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_JEUNES_ENFANTS",
+          "segment": "Les Jeunes",
+          "sous_segment": "Enfants et Eleves",
+          "priorite": 20,
+          "conditions": {
+            "age": {
+              "min": null,
+              "max": 18
+            },
+            "mmm": {
+              "min": null,
+              "max": 10000
+            },
+            "vrd": {
+              "min": null,
+              "max": 300000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_JEUNES_ETUDIANTS",
+          "segment": "Les Jeunes",
+          "sous_segment": "Etudiants",
+          "priorite": 21,
+          "conditions": {
+            "profession_in": "profession_etudiant",
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "mmm": {
+              "min": null,
+              "max": 10000
+            },
+            "vrd": {
+              "min": null,
+              "max": 300000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_JEUNES_JDA_POTENTIEL",
+          "segment": "Les Jeunes",
+          "sous_segment": "JDA a potentiel",
+          "priorite": 22,
+          "conditions": {
+            "age": {
+              "min": 19,
+              "max": 30
+            },
+            "profession_in": "professions_a_potentiel_salaries_annexe4",
+            "mmm": {
+              "min": null,
+              "max": 10000
+            },
+            "vrd": {
+              "min": null,
+              "max": 300000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_JEUNES_AUTRES_JDA",
+          "segment": "Les Jeunes",
+          "sous_segment": "Autres JDA",
+          "priorite": 23,
+          "conditions": {
+            "age": {
+              "min": 19,
+              "max": 30
+            },
+            "mmm": {
+              "min": null,
+              "max": 10000
+            },
+            "vrd": {
+              "min": null,
+              "max": 300000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_HDG_PATRIMONIAUX",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Patrimoniaux",
+          "priorite": 30,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "mmm": {
+              "min": 10000,
+              "max": null
+            },
+            "vrd": {
+              "min": 300000,
+              "max": 500000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_HDG_AFFLUENT_POTENTIEL",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Affluent",
+          "priorite": 31,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "profession_in": "professions_a_potentiel_salaries_annexe4",
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": null,
+              "max": null
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "Professions a potentiel integrees a l'Affluent independamment du MMM (exception CSP/secteur public, annexe 4, boite 'Salaries : Affluents/TRE Premium/JDA Potentiel', page 20)."
+        },
+        {
+          "id": "PART_HDG_AFFLUENT_EPARGNANT",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Epargnants et deposants exclusifs",
+          "priorite": 31.5,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "epargnant_deposant_exclusif": true,
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": 100000,
+              "max": 300000
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "8e champ optionnel (EpargnantDeposantExclusif). Clients ne detenant que des comptes Epargne/Depots a terme, VRD>=100mD et<300mD (page 5/7, pas de critere MMM pour cette variante)."
+        },
+        {
+          "id": "PART_HDG_AFFLUENT",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Affluent",
+          "priorite": 32,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "mmm": {
+              "min": 4000,
+              "max": null
+            },
+            "vrd": {
+              "min": 100000,
+              "max": 300000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_CM_EPARGNANT",
+          "segment": "Classe Moyenne",
+          "sous_segment": "Epargnants et deposants exclusifs",
+          "priorite": 39,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "epargnant_deposant_exclusif": true,
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": 5000,
+              "max": 100000
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "8e champ optionnel (EpargnantDeposantExclusif). VRD>=5mD et<100mD (page 5/9, pas de critere MMM pour cette variante)."
+        },
+        {
+          "id": "PART_CM_SALARIES",
+          "segment": "Classe Moyenne",
+          "sous_segment": "Les salaries",
+          "priorite": 40,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "mmm": {
+              "min": 1000,
+              "max": 4000
+            },
+            "vrd": {
+              "min": 5000,
+              "max": 100000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PART_GP_EPARGNANT",
+          "segment": "Grand Public",
+          "sous_segment": "Epargnants et deposants exclusifs",
+          "priorite": 49,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "epargnant_deposant_exclusif": true,
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": null,
+              "max": 5000
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "8e champ optionnel (EpargnantDeposantExclusif). VRD<5mD (page 5/10, pas de critere MMM pour cette variante)."
+        },
+        {
+          "id": "PART_GP_PARTICULIERS",
+          "segment": "Grand Public",
+          "sous_segment": "Particuliers",
+          "priorite": 50,
+          "conditions": {
+            "age": {
+              "min": 31,
+              "max": null
+            },
+            "mmm": {
+              "min": null,
+              "max": 1000
+            },
+            "vrd": {
+              "min": null,
+              "max": 5000
+            },
+            "combinaison": "OR"
+          }
+        }
+      ]
+    },
+    "PRO": {
+      "libelle": "Professionnels",
+      "categorie_client": "Professionnel",
+      "regles": [
+        {
+          "id": "PRO_HDG_FORTUNES",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Fortunes",
+          "priorite": 10,
+          "conditions": {
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": 500000,
+              "max": null
+            },
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PRO_HDG_PL",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Professions Liberales",
+          "priorite": 20,
+          "conditions": {
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "profession_in": "professions_liberales_annexe5_toutes",
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": null,
+              "max": null
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "Profession liberale declaree (annexe 5) => HG quel que soit l'age et le MMM/VRD."
+        },
+        {
+          "id": "PRO_HDG_PROFESSIONNELS_POTENTIEL",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Professionnels",
+          "priorite": 29,
+          "conditions": {
+            "profession_in": "professions_a_potentiel_salaries_annexe4",
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": null,
+              "max": null
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "PROVISOIRE, en attente de validation (voir _notes_conflits.pro_professionnels_hors_pl_A_CONFIRMER). Professions a potentiel hors PL integrees a Professionnels independamment du montant : Magistrats, Enseignants universitaires, Medecins fonction publique, Chefs de mission diplomatique, Hauts fonctionnaires, Pilotes et officiers de pont."
+        },
+        {
+          "id": "PRO_HDG_PROFESSIONNELS",
+          "segment": "Haut de Gamme",
+          "sous_segment": "Professionnels",
+          "priorite": 30,
+          "conditions": {
+            "mmm": {
+              "min": 100000,
+              "max": null
+            },
+            "vrd": {
+              "min": 200000,
+              "max": null
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "Professionnels HG par le montant (MMM>=100mD OU VRD>=200mD). Les PL sont deja captees en priorite 20 (hors PL)."
+        },
+        {
+          "id": "PRO_CM_COMMERCANTS",
+          "segment": "Classe Moyenne",
+          "sous_segment": "Commercants & Artisans",
+          "priorite": 40,
+          "conditions": {
+            "mmm": {
+              "min": 5000,
+              "max": 100000
+            },
+            "vrd": {
+              "min": 15000,
+              "max": 200000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "PRO_GP_COMMERCANTS",
+          "segment": "Grand Public",
+          "sous_segment": "Commercants & Artisans",
+          "priorite": 50,
+          "conditions": {
+            "mmm": {
+              "min": null,
+              "max": 5000
+            },
+            "vrd": {
+              "min": null,
+              "max": 15000
+            },
+            "combinaison": "OR"
+          }
+        }
+      ]
+    },
+    "TRE": {
+      "libelle": "Tunisiens Residents a l'Etranger",
+      "categorie_client": "TRE",
+      "regles": [
+        {
+          "id": "TRE_PREMIUM_MONTANT",
+          "segment": "Premium",
+          "sous_segment": "Premium",
+          "priorite": 10,
+          "conditions": {
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "mmm": {
+              "min": 2500,
+              "max": null
+            },
+            "vrd": {
+              "min": 50000,
+              "max": null
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "MMM=>2,5 mD (colonne MMM du tableau note, distincte de la colonne Revenus=>10 mD hors scope)."
+        },
+        {
+          "id": "TRE_PREMIUM_POTENTIEL",
+          "segment": "Premium",
+          "sous_segment": "Premium",
+          "priorite": 11,
+          "conditions": {
+            "profession_in": "professions_a_potentiel_salaries_annexe4",
+            "age": {
+              "min": null,
+              "max": null
+            },
+            "mmm": {
+              "min": null,
+              "max": null
+            },
+            "vrd": {
+              "min": null,
+              "max": null
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "Enrichissement note : professions a potentiel integrees a Premium independamment du montant (boite 'Salaries : Affluents/TRE Premium/JDA Potentiel', page 20)."
+        },
+        {
+          "id": "TRE_POTENTIEL_MOYEN",
+          "segment": "Potentiel moyen",
+          "sous_segment": "Potentiel moyen",
+          "priorite": 20,
+          "conditions": {
+            "mmm": {
+              "min": 1000,
+              "max": null
+            },
+            "vrd": {
+              "min": 25000,
+              "max": 50000
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "MMM=>1 mD (colonne MMM du tableau note, distincte de la colonne Revenus=>5 mD hors scope)."
+        },
+        {
+          "id": "TRE_FAIBLE_POTENTIEL",
+          "segment": "Faible potentiel",
+          "sous_segment": "Faible potentiel",
+          "priorite": 30,
+          "conditions": {
+            "mmm": {
+              "min": null,
+              "max": 1000
+            },
+            "vrd": {
+              "min": null,
+              "max": 25000
+            },
+            "combinaison": "OR"
+          },
+          "commentaire": "MMM<1 mD (colonne MMM du tableau note, distincte de la colonne Revenus<5 mD hors scope)."
+        }
+      ]
+    },
+    "ENR": {
+      "libelle": "Etrangers Non Residents",
+      "categorie_client": "ENR",
+      "regles": [
+        {
+          "id": "ENR_PREMIUM",
+          "segment": "Premium",
+          "sous_segment": "Premium",
+          "priorite": 10,
+          "conditions": {
+            "mmm": {
+              "min": 10000,
+              "max": null
+            },
+            "vrd": {
+              "min": 60000,
+              "max": null
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "ENR_POTENTIEL_MOYEN",
+          "segment": "Potentiel moyen",
+          "sous_segment": "Potentiel moyen",
+          "priorite": 20,
+          "conditions": {
+            "mmm": {
+              "min": 5000,
+              "max": null
+            },
+            "vrd": {
+              "min": 30000,
+              "max": 60000
+            },
+            "combinaison": "OR"
+          }
+        },
+        {
+          "id": "ENR_FAIBLE_POTENTIEL",
+          "segment": "Faible potentiel",
+          "sous_segment": "Faible potentiel",
+          "priorite": 30,
+          "conditions": {
+            "mmm": {
+              "min": null,
+              "max": 5000
+            },
+            "vrd": {
+              "min": null,
+              "max": 30000
+            },
+            "combinaison": "OR"
+          }
+        }
+      ]
+    }
+  }
+}

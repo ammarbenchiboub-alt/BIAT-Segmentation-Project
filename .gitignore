@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Runtime state (auto-generated, not source)
+auth/utilisateurs.json
+audit/journal.sqlite3
+gouvernance/propositions.sqlite3
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

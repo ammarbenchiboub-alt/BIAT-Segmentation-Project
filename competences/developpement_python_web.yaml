@@ -1,0 +1,18 @@
+competence: "Developpement Python / Web"
+description: >
+  Conception et developpement d'une application web complete en Python
+  (Streamlit), avec une architecture modulaire en packages independants.
+technologies:
+  - Python 3
+  - Streamlit
+  - pandas
+  - programmation orientee objet
+fichiers:
+  - app.py
+  - core/engine.py
+  - core/rules_loader.py
+exemples_concrets:
+  - "Point d'entree unique (app.py) gerant navigation, sessions et 8 pages."
+  - "Moteur de segmentation (MoteurSegmentation) en programmation orientee objet."
+  - "Gestion d'etat via st.session_state (navigation, historique, authentification)."
+niveau: "Applique dans un projet complet de bout en bout (PFE bancaire)."

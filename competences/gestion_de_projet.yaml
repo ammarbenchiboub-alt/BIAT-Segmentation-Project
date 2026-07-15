@@ -1,0 +1,15 @@
+competence: "Gestion de projet"
+description: >
+  Planification et suivi d'un projet individuel selon une methodologie
+  agile, avec un backlog priorise et un decoupage en sprints.
+technologies:
+  - methodologie Agile / Scrum
+  - backlog produit priorise (MoSCoW)
+  - diagramme de Gantt
+fichiers:
+  - rapport/Rapport_PFE_Chapitres_1_2.docx
+exemples_concrets:
+  - "Backlog produit avec criteres MoSCoW (BF01-BF12)."
+  - "Decoupage en 5 sprints (fevrier a juillet 2026) avec objectifs par sprint."
+  - "Diagramme de Gantt illustrant la planification du projet."
+niveau: "Applique sur l'ensemble du cycle de vie du projet (planification -> livraison)."
