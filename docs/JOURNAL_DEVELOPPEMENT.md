@@ -61,6 +61,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 11 | Optimisation des traitements en masse | Performances |
 | 12 | Coherence entre le modele ML livre et la version figee | Reproductibilite |
 | 13 | Factorisation du socle d'acces aux donnees (DRY) | Architecture |
+| 14 | Fiabilisation du chatbot expert : recherche et source unique | Correction / Gouvernance |
 
 ---
 ---
@@ -1631,6 +1632,228 @@ seulement son symptome.
 | Portee de l'ancre | ne couvre le tronquage qu'a partir de son initialisation |
 
 ---
+---
 
-*Fin du journal — version 2.0. Les notes ulterieures sont ajoutees a la suite,
-sans jamais modifier ni supprimer les precedentes.*
+# Note 14 — Fiabilisation du chatbot expert : recherche et source unique
+
+> **Origine** : defaut signale par l'utilisateur en usage reel, sur une capture
+> d'ecran de l'application. L'investigation a revele **trois defauts distincts**,
+> dont deux preexistants a la version 2.0.
+
+## Probleme identifie
+
+A la question « quand je modifier le mmm ca change quoi ? », le chatbot
+repondait correctement sur la logique MMM/VRD, puis enchainait sur un
+paragraphe consacre a la **residence et a la reglementation de change**, sans
+aucun rapport avec la question posee.
+
+L'analyse a mis au jour trois defauts cumules :
+
+| # | Defaut | Gravite |
+|---|---|---|
+| 1 | Recherche par sous-chaine : faux positifs massifs | Elevee |
+| 2 | Empilement systematique des deux meilleures reponses | Moyenne |
+| 3 | **Seuils ecrits en dur, contredisant le moteur** | **Critique** |
+
+## Analyse
+
+### Defaut 1 — Recherche par sous-chaine
+
+La selection s'ecrivait :
+
+```python
+score = sum(1 for cle in entree["cles"] if _norm(cle) in q)
+```
+
+Le test `in` est une recherche de **sous-chaine** : un mot-cle etait reconnu des
+qu'il apparaissait **a l'interieur d'un autre mot**. Correspondances reellement
+observees :
+
+| Cle | Reconnue dans | Consequence |
+|---|---|---|
+| `and` | qu**and** | l'entree MMM gagnait un point parasite |
+| `change` | ca **change** quoi | l'entree Residence etait activee |
+| `ou` | p**ou**vez, p**ou**r | preposition la plus courante du francais |
+| `pl` | ex**pl**iquer, exem**pl**e | tres frequent |
+| `tre` | au**tre**, no**tre**, e**tre** | omnipresent |
+
+La quasi-totalite des questions en langage naturel declenchait ainsi au moins
+une correspondance parasite. Dans le cas signale, l'entree MMM/VRD obtenait
+2 points (`mmm` + `and` dans « quand ») et l'entree Residence 1 point
+(`change` dans « ca change quoi »).
+
+### Defaut 2 — Empilement inconditionnel
+
+Le code renvoyait **systematiquement les deux meilleures** entrees, quel que
+soit leur ecart de score : une entree ayant obtenu 1 point par un mot-cle
+marginal etait presentee au meme rang qu'une entree en ayant obtenu 2
+pertinents. L'utilisateur recevait une reponse juste suivie d'une reponse hors
+sujet, **sans moyen de distinguer laquelle repondait a sa question**.
+
+### Defaut 3 — Seconde copie des regles
+
+L'investigation a revele un defaut plus grave, sans rapport avec la question
+initiale : **les seuils cites par le chatbot etaient ecrits en dur** dans le
+texte des reponses. Ils constituaient donc une **seconde copie des regles**, en
+contradiction directe avec le principe fondateur du projet
+(`config/regles_segmentation.json` = source unique).
+
+Ce defaut ne relevait pas de l'hypothese : **il s'etait deja materialise**. La
+correction des seuils MMM du marche TRE — documentee dans
+`_notes_conflits.tre_mmm_vs_revenu_CORRIGE` (la colonne « Revenus » du tableau
+de la note avait ete confondue avec la colonne « MMM ») — avait ete appliquee
+au fichier de regles le 2026-07-07 **mais pas au texte du chatbot** :
+
+| Marche TRE | Chatbot annoncait | Moteur appliquait |
+|---|---|---|
+| Premium, MMM | **>= 10 mD** | **>= 2,5 mD** |
+| Potentiel moyen, MMM | **>= 5 mD** | **>= 1 mD** |
+| Faible potentiel, MMM | **< 5 mD** | **< 1 mD** |
+
+Le chatbot annoncait donc aux conseillers des seuils que le moteur
+n'appliquait plus. Une verification complementaire a montre que le meme
+mecanisme rendait le chatbot **incapable de suivre une modification validee en
+page Parametrage** : apres un relevement du seuil Fortunes a 600 mD, le moteur
+classait correctement un client a 550 mD en « Grand Public » tandis que le
+chatbot continuait d'affirmer « VRD >= 500 mD ».
+
+**Risques** : un conseiller s'appuyant sur le chatbot pour justifier une
+decision aupres d'un client transmettait une information erronee ; l'outil cense
+faire autorite sur la note la contredisait ; et toute evolution future des
+seuils aurait aggrave l'ecart.
+
+## Solution retenue
+
+1. **Recherche par mot entier** : fonction `_contient_mot()` s'appuyant sur les
+   bornes de mot (`\b`) plutot que sur le test `in`.
+2. **Mots-cles assainis** : retrait de `ou`, `and`, `or` (operateurs logiques
+   inexploitables comme mots-cles) ; `change` remplace par la locution complete
+   `reglementation de change`.
+3. **Seuils derives de la source unique** : methodes `_seuil()`, `_plage()` et
+   `_age_min()` lisant les valeurs dans les regles du moteur. Les listes de
+   professions etaient deja construites ainsi ; le principe est simplement
+   etendu aux valeurs numeriques.
+4. **Selection par score** : seules les entrees **aussi pertinentes que la
+   meilleure** sont renvoyees.
+
+## Justification technique
+
+**Pourquoi ne pas tolerer automatiquement les pluriels (`\bcle s?\b`) ?**
+Cela ferait correspondre la cle `tre` (marche TRE) au mot tres frequent
+« tres ». La base de connaissances declare deja explicitement les variantes
+utiles (`marche`/`marches`, `liberale`/`liberales`), rendant la tolerance
+inutile et dangereuse.
+
+**Pourquoi retirer `ou` plutot que le traiter specialement ?**
+Un operateur logique n'a aucune valeur discriminante comme mot-cle. L'entree
+reste atteinte par `mmm`, `vrd`, `combinaison` et `logique` : une question du
+type « MMM ou VRD ? » continue d'y repondre (verifie par test).
+
+**Pourquoi deriver les seuils plutot que corriger les valeurs erronees ?**
+Corriger les nombres aurait retabli l'exactitude **du jour**, sans traiter la
+cause : la duplication. La divergence se serait reproduite a la modification
+suivante. Deriver les valeurs rend l'incoherence **structurellement
+impossible** — c'est le meme raisonnement que pour la factorisation du socle
+SQLite (Note 13) : traiter la cause, non le symptome.
+
+**Le contenu metier est-il modifie ?**
+Non, et c'est un point essentiel. Les **libelles** des reponses restent ceux de
+la note ; seules les **valeurs** sont desormais lues dans le fichier de regles,
+lui-meme issu exclusivement de la note. Le chatbot cesse de detenir une opinion
+propre sur les seuils : il **rapporte** ceux du moteur. Les corrections
+observees (TRE 2,5 mD au lieu de 10 mD) ne sont pas des modifications de regle,
+mais l'alignement du chatbot sur la regle **deja en vigueur** dans le moteur.
+
+**Pourquoi `_age_min()` renvoie-t-elle la borne moins un ?**
+La regle porte `age >= 31` ; la note dit « plus de 30 ans ». La methode preserve
+la formulation d'origine tout en derivant la valeur de la source unique : la
+fidelite redactionnelle n'impose pas de dupliquer la donnee.
+
+## Fichiers modifies
+
+- `chatbot/expert.py` — `_contient_mot`, `_seuil`, `_plage`, `_age_min`,
+  mots-cles assainis, selection par score
+- `tests/test_chatbot.py` (creation)
+- `tests/run_all.py` — integration de la suite
+
+## Changements realises
+
+- Recherche par bornes de mot au lieu de sous-chaine.
+- Neuf entrees de la base de connaissances derivent desormais leurs seuils des
+  regles (Fortunes, Patrimoniaux, Affluent, Professionnels, Classe Moyenne,
+  Grand Public, Les Jeunes, TRE, ENR).
+- Selection limitee aux entrees a score maximal.
+
+## Impact
+
+- **Securite** : sans objet direct.
+- **Performances** : negligeable (une expression reguliere par mot-cle).
+- **Maintenabilite** : suppression de la seconde copie des seuils ; une
+  modification de regle n'exige plus aucune intervention sur le chatbot.
+- **Robustesse** : le chatbot ne peut plus contredire le moteur.
+- **Gouvernance** : gain majeur — une modification validee en Parametrage
+  (double validation) est immediatement refletee dans les reponses du chatbot.
+  Le principe de **source unique** est enfin respecte par ce module.
+- **Experience utilisateur** : gain majeur — les reponses cessent d'etre
+  polluees par des paragraphes hors sujet, et surtout **cessent d'annoncer des
+  seuils faux**.
+
+## Compatibilite
+
+- **Aucune modification du moteur** : `core/engine.py` n'est pas touche.
+- **Aucune regle metier modifiee** : le chatbot rapporte desormais les regles
+  du JSON au lieu d'une copie perimee. Les valeurs affichees changent
+  (TRE : 2,5 mD au lieu de 10 mD) parce que la copie etait fausse, non parce
+  que la regle a change.
+- Empreinte des 715 008 profils **inchangee** : `19789b84...54e8`.
+
+## Bonnes pratiques utilisees
+
+- **Source unique de verite (Single Source of Truth)** appliquee jusqu'au bout.
+- **DRY** : traiter la cause (la duplication), non le symptome (les valeurs).
+- **Correspondance par mot entier** plutot que par sous-chaine.
+- **Reproduction du defaut avant correction**, puis verrouillage par test.
+
+## Tests effectues
+
+`tests/test_chatbot.py` — **49 assertions** :
+
+- la question de l'utilisateur ne declenche plus la reponse sur la residence ;
+- neuf correspondances internes verifiees comme supprimees (`and` dans
+  « quand », `tre` dans « autre », `pl` dans « expliquer »...) ;
+- les memes cles restent reconnues comme **mots entiers** (`TRE`, `ENR`, `PL`,
+  `500`) — la correction ne degrade pas la recherche legitime ;
+- les huit exemples de questions de l'interface donnent toujours la bonne
+  reponse (non-regression) ;
+- **TRE annonce 2,5 mD et 1 mD**, et plus les valeurs erronees ;
+- **test decisif** : un seuil porte a 600 mD est immediatement reflete dans la
+  reponse, et l'ancienne valeur disparait — la divergence ne peut pas revenir ;
+- le chatbot delegue au moteur (segment, sous-segment et regle identiques a un
+  appel direct) ;
+- les questions hors sujet renvoient toujours le message d'absence : le chatbot
+  n'invente jamais.
+
+**Anecdote methodologique.** La premiere version de ce test verifiait l'absence
+des valeurs erronees par `"5 mD" not in reponse`, et echouait — car `"5 mD"` est
+une sous-chaine de `"25 mD"`. Le test reproduisait donc **exactement le defaut
+qu'il devait verrouiller**. Meme une borne de mot n'y suffisait pas : dans
+`"2.5 mD"`, le point cree une borne juste avant le `5`. L'assertion finale porte
+sur les locutions exactes (`"MMM >= 10 mD"`), ce qui exprime sans ambiguite ce
+qui est verifie. Cet episode illustre concretement pourquoi le defaut d'origine
+etait facile a commettre et difficile a voir : la comparaison de chaines sans
+notion de mot est une source d'erreur qui resiste meme a l'attention de celui
+qui vient de la corriger ailleurs.
+
+## Resultat
+
+Le chatbot repond a la question posee, sans paragraphe parasite, et **rapporte
+desormais les seuils reellement appliques par le moteur**. Trois seuils TRE
+faux, presents depuis la correction du 2026-07-07, ont ete elimines — non par
+une correction ponctuelle, mais en supprimant la duplication qui les avait
+rendus possibles.
+
+---
+
+*Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les
+precedentes. La synthese de la version 2.0 ci-dessus reste l'etat a la
+cloture de cette version ; les notes posterieures la completent.*

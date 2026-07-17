@@ -26,14 +26,112 @@ def _norm(t: str) -> str:
     return "".join(c for c in t if not unicodedata.combining(c))
 
 
+def _contient_mot(cle: str, question: str) -> bool:
+    """Vrai si `cle` apparait comme MOT ENTIER dans `question`.
+
+    Remplace le test `cle in question` (recherche de sous-chaine), qui
+    produisait des faux positifs massifs : un mot-cle etait reconnu des qu'il
+    apparaissait a l'INTERIEUR d'un autre mot. Exemples reellement observes :
+
+        cle 'and'    trouvee dans "qu-and je modifie le MMM"
+        cle 'change' trouvee dans "ca change quoi" (verbe usuel), alors qu'elle
+                     designe la "reglementation de change"
+        cle 'ou'     trouvee dans "p-ou-vez", "p-ou-r"
+        cle 'pl'     trouvee dans "ex-pl-iquer", "exem-pl-e"
+        cle 'tre'    trouvee dans "au-tre", "no-tre", "e-tre"
+
+    La quasi-totalite des questions formulees en langage naturel declenchait
+    ainsi au moins une correspondance parasite, et le chatbot repondait a cote.
+
+    Les bornes de mot (\\b) suppriment ces correspondances internes. Les formes
+    plurielles ne sont volontairement PAS tolerees automatiquement (un
+    `\\bcle s?\\b` ferait correspondre la cle 'tre' au mot tres frequent
+    "tres") : la base de connaissances declare explicitement les variantes
+    utiles ('marche'/'marches', 'liberale'/'liberales', ...).
+    """
+    return re.search(rf"\b{re.escape(cle)}\b", question) is not None
+
+
 class ChatbotExpert:
     def __init__(self, moteur: MoteurSegmentation | None = None):
         self.moteur = moteur or MoteurSegmentation()
+        self._index_regles = {
+            regle["id"]: regle
+            for marche in self.moteur.marches.values()
+            for regle in marche["regles"]
+        }
         self.kb = self._construire_kb()
+
+    # -------------------------------------------------- lecture des seuils
+    def _seuil(self, regle_id: str, champ: str, borne: str) -> str:
+        """Renvoie un seuil formate en mD, LU DEPUIS LA SOURCE UNIQUE.
+
+        Les seuils cites par le chatbot etaient auparavant ecrits en dur dans
+        le texte des reponses. Ils constituaient donc une SECONDE COPIE des
+        regles, en contradiction directe avec le principe fondateur du projet
+        (config/regles_segmentation.json = source unique).
+
+        Ce defaut s'etait deja materialise : la correction des seuils MMM du
+        marche TRE (voir _notes_conflits.tre_mmm_vs_revenu_CORRIGE dans le
+        JSON -- colonne Revenus confondue avec colonne MMM) avait ete appliquee
+        au fichier de regles mais PAS au texte du chatbot. Celui-ci annoncait
+        donc aux conseillers des seuils TRE que le moteur n'appliquait plus
+        (10 mD et 5 mD au lieu de 2,5 mD et 1 mD).
+
+        En derivant les valeurs des regles, le chatbot ne peut plus diverger :
+        toute modification validee en page Parametrage est immediatement
+        reflechie dans ses reponses. Les listes de professions etaient deja
+        construites ainsi (liste_professions) ; ce principe est simplement
+        etendu aux valeurs numeriques.
+
+        L'unite d'affichage reste le mD (millier de dinars), unite de la note ;
+        le JSON stocke des DT. La conversion est purement presentationnelle.
+        """
+        regle = self._index_regles.get(regle_id)
+        if not regle:  # pragma: no cover - garde-fou
+            return "?"
+        bornes = regle["conditions"].get(champ) or {}
+        valeur = bornes.get(borne)
+        if valeur is None:  # pragma: no cover - garde-fou
+            return "?"
+        return f"{valeur / 1000:g} mD"
+
+    def _plage(self, regle_id: str, champ: str) -> str:
+        """Formate un intervalle sous la forme '25-50 mD' (et non
+        '25 mD-50 mD') : l'unite n'est repetee qu'une fois, comme dans la
+        redaction d'origine de la note."""
+        mini = self._seuil(regle_id, champ, "min")
+        maxi = self._seuil(regle_id, champ, "max")
+        return f"{mini.removesuffix(' mD')}-{maxi}"
+
+    def _age_min(self, regle_id: str) -> str:
+        """Age plancher exprime comme dans la note : la regle porte
+        'age >= 31', la note dit 'plus de 30 ans'. On renvoie donc la borne
+        moins un, pour rester fidele a la formulation d'origine tout en
+        derivant la valeur de la source unique."""
+        regle = self._index_regles.get(regle_id)
+        borne = (regle["conditions"].get("age") or {}).get("min") if regle else None
+        return str(borne - 1) if borne else "?"
 
     # ------------------------------------------------------------------ KB
     def _construire_kb(self) -> list[dict]:
-        """Base de connaissances : chaque entree = mots-cles + reponse sourcee."""
+        """Base de connaissances : chaque entree = mots-cles + reponse sourcee.
+
+        Les TEXTES de reponse sont issus exclusivement de la Note BIAT 2023-06 :
+        ils ne doivent jamais etre modifies pour des raisons techniques. Seuls
+        les MOTS-CLES (metadonnees de recherche, sans valeur metier) ont ete
+        revus pour supprimer ceux qui produisaient des correspondances
+        parasites -- voir _contient_mot :
+
+          - 'ou', 'and', 'or' (entree MMM/VRD) : retires. Ce sont des
+            operateurs logiques, inexploitables comme mots-cles ('ou' est la
+            preposition la plus courante du francais). L'entree reste atteinte
+            par 'mmm', 'vrd', 'combinaison' et 'logique' -- une question du
+            type "MMM ou VRD ?" continue donc d'y repondre.
+          - 'change' (entree Residence) : remplace par la locution complete
+            "reglementation de change". Isole, 'change' est un verbe usuel qui
+            faisait repondre sur la residence a des questions sans rapport.
+        """
         m = self.moteur
         pl = ", ".join(m.liste_professions("professions_liberales_annexe5_toutes"))
         pot_hg = ", ".join(m.liste_professions("professions_a_potentiel_HG_annexe4"))
@@ -41,29 +139,66 @@ class ChatbotExpert:
         return [
             {"cles": ["marche", "marches", "geres", "part pro tre enr", "tpme"],
              "rep": "Les marches geres sont PART (Particuliers), PRO (Professionnels), TRE (Tunisiens Residents a l'Etranger) et ENR (Etrangers Non Residents). Le marche TPME n'est pas gere par cette application."},
-            {"cles": ["mmm", "vrd", "ou", "and", "or", "combinaison", "logique"],
+            {"cles": ["mmm", "vrd", "combinaison", "logique"],
              "rep": "La condition entre MMM et VRD est un OU logique (OR), jamais un ET. Un client atteint un palier des que le MMM OU le VRD satisfait le seuil. La note ENR l'ecrit explicitement : 'MMM ou Total des avoirs'."},
-            {"cles": ["fortune", "fortunes", "500"],
-             "rep": "Fortunes (Haut de Gamme, PART & PRO) : quel que soit l'age, VRD >= 500 mD."},
-            {"cles": ["patrimoniaux", "300", "500"],
-             "rep": "Patrimoniaux (PART, Haut de Gamme) : plus de 30 ans, MMM >= 10 mD OU VRD entre 300 et 500 mD."},
-            {"cles": ["affluent", "affluents", "100", "300"],
-             "rep": "Affluent (PART, Haut de Gamme) : plus de 30 ans, MMM >= 4 mD OU VRD entre 100 et 300 mD. Les professions a potentiel (annexe 4) sont integrees a l'Affluent independamment du MMM."},
-            {"cles": ["professionnels", "100 md", "200 md"],
-             "rep": "Professionnels (PRO, Haut de Gamme) : MMM >= 100 mD OU VRD >= 200 mD (professions a potentiel hors PL)."},
+            {"cles": ["fortune", "fortunes"],
+             "rep": f"Fortunes (Haut de Gamme, PART & PRO) : quel que soit l'age, "
+                    f"VRD >= {self._seuil('PART_HDG_FORTUNES', 'vrd', 'min')}."},
+            {"cles": ["patrimoniaux"],
+             "rep": f"Patrimoniaux (PART, Haut de Gamme) : plus de {self._age_min('PART_HDG_PATRIMONIAUX')} ans, "
+                    f"MMM >= {self._seuil('PART_HDG_PATRIMONIAUX', 'mmm', 'min')} OU VRD entre "
+                    f"{self._plage('PART_HDG_PATRIMONIAUX', 'vrd').replace('-', ' et ')}."},
+            {"cles": ["affluent", "affluents"],
+             "rep": f"Affluent (PART, Haut de Gamme) : plus de {self._age_min('PART_HDG_AFFLUENT')} ans, "
+                    f"MMM >= {self._seuil('PART_HDG_AFFLUENT', 'mmm', 'min')} OU VRD entre "
+                    f"{self._plage('PART_HDG_AFFLUENT', 'vrd').replace('-', ' et ')}. Les professions a potentiel "
+                    f"(annexe 4) sont integrees a l'Affluent independamment du MMM."},
+            {"cles": ["professionnels"],
+             "rep": f"Professionnels (PRO, Haut de Gamme) : "
+                    f"MMM >= {self._seuil('PRO_HDG_PROFESSIONNELS', 'mmm', 'min')} OU "
+                    f"VRD >= {self._seuil('PRO_HDG_PROFESSIONNELS', 'vrd', 'min')} "
+                    f"(professions a potentiel hors PL)."},
             {"cles": ["profession liberale", "liberale", "liberales", "pl"],
              "rep": f"Professions Liberales (PRO, Haut de Gamme) : profession liberale declaree, quel que soit l'age et le montant. Liste (annexe 5) : {pl}."},
             {"cles": ["classe moyenne", "salaries", "commercants", "artisans"],
-             "rep": "Classe Moyenne : PART 'Les salaries' (secteur public) MMM 1-4 mD OU VRD 5-100 mD ; PRO 'Commercants & Artisans' MMM 5-100 mD OU VRD 15-200 mD."},
+             "rep": f"Classe Moyenne : PART 'Les salaries' (secteur public) "
+                    f"MMM {self._plage('PART_CM_SALARIES', 'mmm')} OU "
+                    f"VRD {self._plage('PART_CM_SALARIES', 'vrd')} ; "
+                    f"PRO 'Commercants & Artisans' "
+                    f"MMM {self._plage('PRO_CM_COMMERCANTS', 'mmm')} OU "
+                    f"VRD {self._plage('PRO_CM_COMMERCANTS', 'vrd')}."},
             {"cles": ["grand public", "dormant", "dormants"],
-             "rep": "Grand Public : PART Particuliers MMM < 1 mD OU VRD < 5 mD ; PRO Commercants & Artisans MMM < 5 mD OU VRD < 15 mD. Clients dormants : montants tres faibles et 0 operation sur 12 mois."},
+             "rep": f"Grand Public : PART Particuliers "
+                    f"MMM < {self._seuil('PART_GP_PARTICULIERS', 'mmm', 'max')} OU "
+                    f"VRD < {self._seuil('PART_GP_PARTICULIERS', 'vrd', 'max')} ; "
+                    f"PRO Commercants & Artisans "
+                    f"MMM < {self._seuil('PRO_GP_COMMERCANTS', 'mmm', 'max')} OU "
+                    f"VRD < {self._seuil('PRO_GP_COMMERCANTS', 'vrd', 'max')}. "
+                    f"Clients dormants : montants tres faibles et 0 operation sur 12 mois."},
             {"cles": ["jeunes", "jda", "enfants", "eleves", "etudiant", "etudiants"],
-             "rep": "Les Jeunes (PART) : Enfants et Eleves (<= 18 ans) ; Etudiants (profession Etudiant, tout age) ; JDA a potentiel (>18 et <=30 ans, profession a potentiel) ; Autres JDA (>18 et <=30 ans). Seuils : MMM < 10 mD, VRD < 300 mD."},
+             "rep": f"Les Jeunes (PART) : Enfants et Eleves (<= 18 ans) ; Etudiants (profession "
+                    f"Etudiant, tout age) ; JDA a potentiel (>18 et <=30 ans, profession a "
+                    f"potentiel) ; Autres JDA (>18 et <=30 ans). Seuils : "
+                    f"MMM < {self._seuil('PART_JEUNES_AUTRES_JDA', 'mmm', 'max')}, "
+                    f"VRD < {self._seuil('PART_JEUNES_AUTRES_JDA', 'vrd', 'max')}."},
             {"cles": ["tre", "resident etranger", "residents a l'etranger"],
-             "rep": "TRE : Premium (profession a potentiel OU MMM >= 10 mD OU VRD >= 50 mD) ; Potentiel moyen (MMM >= 5 mD OU VRD 25-50 mD) ; Faible potentiel (MMM < 5 mD, VRD < 25 mD) ; TRE Inactif (comptes non mouvementes 1 an)."},
+             "rep": f"TRE : Premium (profession a potentiel OU "
+                    f"MMM >= {self._seuil('TRE_PREMIUM_MONTANT', 'mmm', 'min')} OU "
+                    f"VRD >= {self._seuil('TRE_PREMIUM_MONTANT', 'vrd', 'min')}) ; "
+                    f"Potentiel moyen (MMM >= {self._seuil('TRE_POTENTIEL_MOYEN', 'mmm', 'min')} OU "
+                    f"VRD {self._plage('TRE_POTENTIEL_MOYEN', 'vrd')}) ; "
+                    f"Faible potentiel (MMM < {self._seuil('TRE_FAIBLE_POTENTIEL', 'mmm', 'max')}, "
+                    f"VRD < {self._seuil('TRE_FAIBLE_POTENTIEL', 'vrd', 'max')}) ; "
+                    f"TRE Inactif (comptes non mouvementes 1 an)."},
             {"cles": ["enr", "etranger non resident", "non resident"],
-             "rep": "ENR : Premium (MMM >= 10 mD OU VRD >= 60 mD) ; Potentiel moyen (MMM >= 5 mD OU VRD 30-60 mD) ; Faible potentiel (MMM < 5 mD, VRD < 30 mD) ; Inactifs (comptes non mouvementes 1 an)."},
-            {"cles": ["residence", "titre de sejour", "change"],
+             "rep": f"ENR : Premium (MMM >= {self._seuil('ENR_PREMIUM', 'mmm', 'min')} OU "
+                    f"VRD >= {self._seuil('ENR_PREMIUM', 'vrd', 'min')}) ; "
+                    f"Potentiel moyen (MMM >= {self._seuil('ENR_POTENTIEL_MOYEN', 'mmm', 'min')} OU "
+                    f"VRD {self._plage('ENR_POTENTIEL_MOYEN', 'vrd')}) ; "
+                    f"Faible potentiel (MMM < {self._seuil('ENR_FAIBLE_POTENTIEL', 'mmm', 'max')}, "
+                    f"VRD < {self._seuil('ENR_FAIBLE_POTENTIEL', 'vrd', 'max')}) ; "
+                    f"Inactifs (comptes non mouvementes 1 an)."},
+            {"cles": ["residence", "titre de sejour", "reglementation de change"],
              "rep": "Residence : le TRE respecte la reglementation de change (centre d'interet a l'etranger, titre de sejour valide ; statut maintenu 2 ans max apres retour definitif). L'ENR ne detient pas de titre de sejour en Tunisie (sejour <= 3 mois successifs)."},
             {"cles": ["annexe 4", "profession a potentiel", "potentiel"],
              "rep": f"Professions a potentiel (annexe 4). Professionnels HG : {pot_hg}. Salaries (Affluents / TRE Premium / JDA Potentiel) : {pot_sal}."},
@@ -144,18 +279,30 @@ class ChatbotExpert:
         q = _norm(question)
         meilleures = []
         for entree in self.kb:
-            score = sum(1 for cle in entree["cles"] if _norm(cle) in q)
+            score = sum(1 for cle in entree["cles"] if _contient_mot(_norm(cle), q))
             if score:
                 meilleures.append((score, entree["rep"]))
         if meilleures:
             meilleures.sort(key=lambda x: -x[0])
-            reps = []
-            vus = set()
-            for _, rep in meilleures[:2]:
+            # Seules les entrees AUSSI pertinentes que la meilleure sont
+            # retenues. Le code precedent renvoyait systematiquement les deux
+            # premieres, quel que soit leur ecart de score : une entree ayant
+            # obtenu 1 point par un mot-cle marginal etait presentee au meme
+            # rang qu'une entree en ayant obtenu 3. L'utilisateur recevait donc
+            # une reponse juste suivie d'une reponse hors sujet, sans pouvoir
+            # distinguer laquelle repondait a sa question.
+            score_max = meilleures[0][0]
+            reps, vus = [], set()
+            for score, rep in meilleures:
+                if score < score_max:
+                    break
                 if rep not in vus:
                     reps.append(rep)
                     vus.add(rep)
-            return {"type": "connaissance", "source": "Note BIAT 2023-06", "reponse": "\n\n".join(reps)}
+            # Plafond de securite : au-dela de deux reponses a egalite, la
+            # question est trop vague pour qu'un empilement soit utile.
+            return {"type": "connaissance", "source": "Note BIAT 2023-06",
+                    "reponse": "\n\n".join(reps[:2])}
 
         # 3) Absence d'information
         return {"type": "absent", "source": "Note BIAT 2023-06", "reponse": MESSAGE_ABSENT}

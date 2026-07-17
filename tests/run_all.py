@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import test_audit
 import test_auth
 import test_cache
+import test_chatbot
 import test_concurrence
 import test_gouvernance
 import test_ml
@@ -35,6 +36,7 @@ SUITES = [
     ("Cache du moteur & invalidation", test_cache.run),
     ("Concurrence & performance", test_concurrence.run),
     ("Module Machine Learning", test_ml.run),
+    ("Chatbot expert metier", test_chatbot.run),
 ]
 
 
