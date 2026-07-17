@@ -449,6 +449,10 @@ Empreinte de reference (v2.0, inchangee depuis la v1.0) :
 
 # Organisation du projet
 
+- **Journal de developpement** : [`docs/JOURNAL_DEVELOPPEMENT.md`](docs/JOURNAL_DEVELOPPEMENT.md)
+  consigne, pour chaque modification, le probleme, l'analyse, la solution, sa
+  justification technique, l'impact et les tests. C'est la source de reference
+  pour le rapport de PFE, le memoire et la soutenance.
 - **Versionne** : sources, `config/regles_segmentation.json`, `config/versions/`,
   le modele ML, `assets/logo_biat.png`, `data/`, `docs/`.
 - **Non versionne** (regenere automatiquement, propre a chaque poste) :
