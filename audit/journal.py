@@ -51,8 +51,23 @@ import hashlib
 import json
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from typing import Any
+
+from commun import connexion_durable
+
+# Champs du profil client conserves dans le journal. Definis une seule fois :
+# la liste servait auparavant en dur dans enregistrer_lot, ou elle risquait de
+# diverger du 8e champ ajoute au moteur.
+_CHAMPS_PROFIL = (
+    "Marche", "Profession", "Age", "MMM", "VRD", "Nationalite", "Residence",
+    "EpargnantDeposantExclusif",
+)
+
+# Serialise les ecritures entre les threads du processus Streamlit (une session
+# = un thread). Voir _ajouter_entrees pour le detail du risque de fourche.
+_VERROU_ECRITURE = threading.Lock()
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHEMIN_JOURNAL = os.path.join(_BASE_DIR, "journal.sqlite3")
@@ -65,39 +80,10 @@ _GENESE = "GENESE"
 
 
 def _connexion() -> sqlite3.Connection:
-    conn = sqlite3.connect(CHEMIN_JOURNAL)
-    # --- Durabilite (revue 2.0) --------------------------------------------
-    # AVANT : PRAGMA journal_mode=MEMORY. Ce mode avait ete retenu parce que
-    # certains environnements de fichiers synchronises/reseau echouaient sur
-    # le verrouillage du journal de transaction ("disk I/O error"). Mais il
-    # garde le journal de rollback en RAM : un crash pendant une ecriture peut
-    # laisser la base CORROMPUE, et non simplement revenue en arriere. Pour un
-    # journal d'audit dont l'interet est precisement d'etre opposable, c'est
-    # le mauvais compromis.
-    #
-    # MAINTENANT : DELETE + synchronous=FULL, avec repli sur l'ancien mode si
-    # l'environnement le refuse vraiment.
-    #   DELETE           journal de rollback sur disque -> une transaction
-    #                    interrompue est annulee proprement, jamais corrompue.
-    #   synchronous=FULL fsync a chaque commit -> une entree confirmee est
-    #                    reellement sur le disque, meme en cas de coupure.
-    # Inconvenients assumes : ecriture plus lente (un fsync par entree) et
-    # concurrence en ecriture plus faible qu'en WAL. Sans consequence ici :
-    # usage mono-utilisateur, faible volume, et la durabilite prime sur le
-    # debit pour un journal d'audit.
-    #
-    # WAL a ete ecarte : plus rapide et meilleur en concurrence, mais il
-    # s'appuie sur de la memoire partagee (fichiers -wal / -shm) qui est
-    # justement ce qui casse sur les partages reseau vises par le commentaire
-    # d'origine. DELETE est le mode le plus portable ET durable.
-    try:
-        conn.execute("PRAGMA journal_mode=DELETE")
-        conn.execute("PRAGMA synchronous=FULL")
-    except sqlite3.DatabaseError:  # pragma: no cover - environnement degrade
-        # Repli : mieux vaut un journal fonctionnel en mode degrade qu'une
-        # application qui ne demarre pas. L'ancre externe continue, elle, de
-        # detecter toute alteration.
-        conn.execute("PRAGMA journal_mode=MEMORY")
+    # Configuration de durabilite centralisee dans commun/base_sqlite.py
+    # (journal_mode=DELETE + synchronous=FULL, timeout, transactions
+    # explicites). Voir ce module pour le detail des compromis.
+    conn = connexion_durable(CHEMIN_JOURNAL)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS journal (
@@ -165,12 +151,26 @@ def _ecrire_ancre(nombre_entrees: int, dernier_hash: str) -> None:
             "alteration lors du controle d'integrite."
         ),
     }
-    temporaire = CHEMIN_ANCRE + ".tmp"
-    with open(temporaire, "w", encoding="utf-8") as f:
-        json.dump(contenu, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(temporaire, CHEMIN_ANCRE)
+    # Nom de fichier temporaire UNIQUE par processus et par thread. Un nom
+    # partage (ancre.json.tmp) faisait echouer les ecritures concurrentes sous
+    # Windows : deux threads ouvraient le meme fichier, et os.replace levait
+    # PermissionError ("fichier utilise par un autre processus"). Streamlit
+    # servant chaque session dans un thread du meme processus, le cas est
+    # courant des que deux conseillers utilisent l'application en meme temps.
+    temporaire = f"{CHEMIN_ANCRE}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(temporaire, "w", encoding="utf-8") as f:
+            json.dump(contenu, f, ensure_ascii=False, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temporaire, CHEMIN_ANCRE)
+    finally:
+        # Ne jamais laisser de .tmp orphelin derriere une erreur.
+        if os.path.exists(temporaire):
+            try:
+                os.remove(temporaire)
+            except OSError:  # pragma: no cover
+                pass
 
 
 def assurer_ancre() -> dict[str, Any]:
@@ -210,6 +210,110 @@ def _calculer_hash(champs: dict, hash_precedent: str) -> str:
     return hashlib.sha256(contenu.encode("utf-8")).hexdigest()
 
 
+def _ajouter_entrees(
+    type_action: str,
+    utilisateur: dict[str, Any],
+    decisions: list[tuple[dict[str, Any], str | None, str | None, str | None]],
+) -> int:
+    """Ajoute N decisions au journal, en UNE SEULE transaction serialisee.
+
+    Point d'ecriture UNIQUE du module : enregistrer() et enregistrer_lot() sont
+    tous deux de simples adaptateurs au-dessus de cette fonction. Il n'existe
+    donc qu'une seule implementation du chainage de hash et de la mise a jour
+    de l'ancre -- une regle a maintenir, pas deux.
+
+    Concurrence
+    -----------
+    Streamlit sert chaque session dans un THREAD du meme processus : deux
+    conseillers qui segmentent au meme instant executent reellement ce code en
+    parallele. Sans protection, deux ecritures simultanees lisent le meme
+    `hash_precedent` et produisent une FOURCHE dans la chaine : deux entrees
+    referencant le meme parent, ce que verifier_integrite signalerait ensuite,
+    a tort, comme une alteration -- et de facon irreversible.
+
+    Double protection, chacune couvrant un cas que l'autre ne couvre pas :
+      - _VERROU_ECRITURE (threading.Lock) : serialise les threads du processus
+        Streamlit. C'est le cas reel et frequent.
+      - BEGIN IMMEDIATE : prend le verrou d'ecriture SQLite des le debut de la
+        transaction, ce qui serialise aussi des PROCESSUS distincts (deux
+        instances de l'application, un script de maintenance...). Sans lui,
+        SQLite n'acquiert le verrou qu'au premier INSERT, donc APRES la lecture
+        du hash precedent : la fourche resterait possible.
+
+    Performance
+    -----------
+    Le lot entier tient dans une transaction, une connexion, une lecture du
+    fichier de regles et une ecriture d'ancre. La version precedente refaisait
+    tout cela POUR CHAQUE LIGNE : un import de 300 lignes prenait 8,3 s
+    (27,7 ms/ligne, soit ~138 s pour 5 000 lignes) a cause d'un fsync et d'une
+    relecture du JSON de regles par ligne.
+
+    Renvoie le nombre d'entrees ajoutees.
+    """
+    if not decisions:
+        return 0
+
+    horodatage = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    # Lu UNE seule fois pour tout le lot : toutes les decisions d'un meme lot
+    # sont, par construction, prises avec la meme version des regles.
+    version_regles = _hash_regles_actives()
+
+    with _VERROU_ECRITURE:
+        conn = _connexion()
+        try:
+            # Verrou d'ecriture pris AVANT la lecture du dernier hash.
+            conn.execute("BEGIN IMMEDIATE")
+            hash_courant = _derniere_entree(conn)
+            for profil, segment, sous_segment, regle_id in decisions:
+                champs = {
+                    "horodatage": horodatage,
+                    "identifiant_utilisateur": utilisateur.get("identifiant", "?"),
+                    "nom_utilisateur": utilisateur.get("nom", "?"),
+                    "role_utilisateur": utilisateur.get("role", "?"),
+                    "type_action": type_action,
+                    "marche": profil.get("Marche"),
+                    "profil_entree": json.dumps(profil, ensure_ascii=False, sort_keys=True),
+                    "segment": segment,
+                    "sous_segment": sous_segment,
+                    "regle_id": regle_id,
+                    "version_regles": version_regles,
+                }
+                hash_entree = _calculer_hash(champs, hash_courant)
+                conn.execute(
+                    """
+                    INSERT INTO journal (
+                        horodatage, identifiant_utilisateur, nom_utilisateur, role_utilisateur,
+                        type_action, marche, profil_entree, segment, sous_segment, regle_id,
+                        version_regles, hash_precedent, hash_entree
+                    ) VALUES (:horodatage, :identifiant_utilisateur, :nom_utilisateur, :role_utilisateur,
+                              :type_action, :marche, :profil_entree, :segment, :sous_segment, :regle_id,
+                              :version_regles, :hash_precedent, :hash_entree)
+                    """,
+                    {**champs, "hash_precedent": hash_courant, "hash_entree": hash_entree},
+                )
+                hash_courant = hash_entree
+            nombre_entrees = conn.execute("SELECT COUNT(*) FROM journal").fetchone()[0]
+            conn.commit()
+        except Exception:
+            # Tout ou rien : un lot partiellement ecrit laisserait une chaine
+            # coherente mais une ancre fausse.
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+        # Ancre mise a jour APRES le commit, mais TOUJOURS sous _VERROU_ECRITURE :
+        # deux ecrivains ne peuvent donc pas publier une ancre dans le desordre.
+        # Si l'application est interrompue entre le commit et cette ligne, le
+        # journal contient plus d'entrees que l'ancre : verifier_integrite le
+        # signale distinctement d'un tronquage (journal en avance = ecriture
+        # interrompue ; journal en retard = entrees supprimees). Aucune entree
+        # n'est jamais perdue.
+        _ecrire_ancre(nombre_entrees, hash_courant)
+
+    return len(decisions)
+
+
 def enregistrer(
     type_action: str,
     utilisateur: dict[str, Any],
@@ -219,53 +323,8 @@ def enregistrer(
     regle_id: str | None,
 ) -> None:
     """Ajoute une entree au journal. Ne modifie et ne supprime jamais une
-    entree existante (append-only)."""
-    horodatage = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    version_regles = _hash_regles_actives()
-    # Garantit qu'une ancre existe AVANT le premier ajout, pour que le compteur
-    # parte d'un etat connu plutot que d'etre initialise apres coup.
-    assurer_ancre()
-
-    conn = _connexion()
-    try:
-        hash_precedent = _derniere_entree(conn)
-        champs = {
-            "horodatage": horodatage,
-            "identifiant_utilisateur": utilisateur.get("identifiant", "?"),
-            "nom_utilisateur": utilisateur.get("nom", "?"),
-            "role_utilisateur": utilisateur.get("role", "?"),
-            "type_action": type_action,
-            "marche": profil.get("Marche"),
-            "profil_entree": json.dumps(profil, ensure_ascii=False, sort_keys=True),
-            "segment": segment,
-            "sous_segment": sous_segment,
-            "regle_id": regle_id,
-            "version_regles": version_regles,
-        }
-        hash_entree = _calculer_hash(champs, hash_precedent)
-        conn.execute(
-            """
-            INSERT INTO journal (
-                horodatage, identifiant_utilisateur, nom_utilisateur, role_utilisateur,
-                type_action, marche, profil_entree, segment, sous_segment, regle_id,
-                version_regles, hash_precedent, hash_entree
-            ) VALUES (:horodatage, :identifiant_utilisateur, :nom_utilisateur, :role_utilisateur,
-                      :type_action, :marche, :profil_entree, :segment, :sous_segment, :regle_id,
-                      :version_regles, :hash_precedent, :hash_entree)
-            """,
-            {**champs, "hash_precedent": hash_precedent, "hash_entree": hash_entree},
-        )
-        conn.commit()
-        nombre_entrees = conn.execute("SELECT COUNT(*) FROM journal").fetchone()[0]
-    finally:
-        conn.close()
-
-    # Ancre mise a jour APRES le commit : si l'application est interrompue
-    # entre les deux, le journal contient une entree de plus que l'ancre. Ce
-    # cas est signale distinctement d'un tronquage par verifier_integrite
-    # (journal en avance = ecriture interrompue ; journal en retard = entrees
-    # supprimees), et n'entraine jamais de perte d'entree.
-    _ecrire_ancre(nombre_entrees, hash_entree)
+    entree existante (append-only). API inchangee."""
+    _ajouter_entrees(type_action, utilisateur, [(profil, segment, sous_segment, regle_id)])
 
 
 def enregistrer_lot(
@@ -276,19 +335,20 @@ def enregistrer_lot(
     """Enregistre plusieurs decisions d'un coup (import de masse). Chaque
     ligne du lot devient sa propre entree chainee dans le journal, pour
     garder une tracabilite ligne par ligne identique a la simulation
-    individuelle. Renvoie le nombre d'entrees ajoutees."""
-    for ligne in lignes:
-        enregistrer(
-            type_action,
-            utilisateur,
-            {k: v for k, v in ligne.items()
-             if k in ("Marche", "Profession", "Age", "MMM", "VRD", "Nationalite", "Residence",
-                      "EpargnantDeposantExclusif")},
+    individuelle. Renvoie le nombre d'entrees ajoutees.
+
+    API inchangee. En interne, le lot est desormais ecrit en UNE transaction
+    (voir _ajouter_entrees) au lieu d'un appel a enregistrer() par ligne."""
+    decisions = [
+        (
+            {k: v for k, v in ligne.items() if k in _CHAMPS_PROFIL},
             ligne.get("Segment"),
             ligne.get("Sous_segment"),
             ligne.get("Regle") or ligne.get("Regle_ID"),
         )
-    return len(lignes)
+        for ligne in lignes
+    ]
+    return _ajouter_entrees(type_action, utilisateur, decisions)
 
 
 def lister(limite: int = 500) -> list[dict[str, Any]]:

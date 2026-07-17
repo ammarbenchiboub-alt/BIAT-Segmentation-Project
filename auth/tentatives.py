@@ -33,11 +33,23 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from commun import connexion_durable
+
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHEMIN_TENTATIVES = os.path.join(_BASE_DIR, "tentatives.sqlite3")
+
+# Serialise la comptabilisation des echecs. Sans ce verrou, le cycle
+# "lire le compteur -> incrementer -> ecrire" s'entrelace entre les threads de
+# sessions Streamlit concurrentes : plusieurs tentatives lisent la meme valeur
+# et ecrivent le meme resultat (mises a jour perdues). Le compteur devient alors
+# non deterministe -- mesure : 20 tentatives paralleles n'en comptabilisaient
+# que 10. Un compteur de securite dont le resultat depend du timing n'est pas
+# un compteur de securite.
+_VERROU_ECHECS = threading.Lock()
 
 # --------------------------------------------------------------------------- #
 # Parametres configurables
@@ -50,17 +62,11 @@ DUREE_VERROUILLAGE_MINUTES = int(os.environ.get("BIAT_VERROUILLAGE_MINUTES", "15
 
 
 def _connexion() -> sqlite3.Connection:
-    conn = sqlite3.connect(CHEMIN_TENTATIVES)
-    # Meme compromis durabilite/portabilite que audit/journal.py : le journal
-    # de rollback reste sur disque (DELETE) et chaque commit est fsync
-    # (synchronous=FULL), pour qu'un verrou ne puisse pas disparaitre a la
-    # faveur d'un crash -- ce qui offrirait a un attaquant un moyen trivial de
-    # remettre le compteur a zero.
-    try:
-        conn.execute("PRAGMA journal_mode=DELETE")
-        conn.execute("PRAGMA synchronous=FULL")
-    except sqlite3.DatabaseError:  # pragma: no cover - environnement degrade
-        conn.execute("PRAGMA journal_mode=MEMORY")
+    # Configuration de durabilite centralisee (commun/base_sqlite.py). Elle
+    # importe particulierement ici : un verrou qui disparaitrait a la faveur
+    # d'un crash offrirait a un attaquant un moyen trivial de remettre le
+    # compteur d'echecs a zero.
+    conn = connexion_durable(CHEMIN_TENTATIVES)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS etat (
@@ -138,39 +144,47 @@ def enregistrer_echec(identifiant: str) -> tuple[bool, int]:
     if not identifiant:
         return False, 0
 
-    conn = _connexion()
-    try:
-        echecs, jusqu_a = _lire_etat(conn, identifiant)
+    # Verrou de thread + BEGIN IMMEDIATE : le cycle lire-incrementer-ecrire
+    # devient indivisible, entre threads comme entre processus. Le compteur est
+    # alors exact quel que soit le parallelisme des tentatives.
+    with _VERROU_ECHECS:
+        conn = _connexion()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            echecs, jusqu_a = _lire_etat(conn, identifiant)
 
-        # Un verrouillage expire remet le compteur a zero : les echecs d'une
-        # salve deja sanctionnee ne doivent pas s'additionner a la suivante,
-        # sinon un compte finirait verrouille a vie apres quelques erreurs de
-        # frappe espacees dans le temps.
-        if jusqu_a is not None and (jusqu_a - _maintenant()).total_seconds() <= 0:
-            echecs = 0
-            jusqu_a = None
+            # Un verrouillage expire remet le compteur a zero : les echecs d'une
+            # salve deja sanctionnee ne doivent pas s'additionner a la suivante,
+            # sinon un compte finirait verrouille a vie apres quelques erreurs de
+            # frappe espacees dans le temps.
+            if jusqu_a is not None and (jusqu_a - _maintenant()).total_seconds() <= 0:
+                echecs = 0
+                jusqu_a = None
 
-        echecs += 1
-        declenche = 0
-        if echecs >= MAX_TENTATIVES:
-            jusqu_a = _maintenant() + timedelta(minutes=DUREE_VERROUILLAGE_MINUTES)
-            declenche = 1
+            echecs += 1
+            declenche = 0
+            if echecs >= MAX_TENTATIVES:
+                jusqu_a = _maintenant() + timedelta(minutes=DUREE_VERROUILLAGE_MINUTES)
+                declenche = 1
 
-        conn.execute(
-            "INSERT INTO etat (identifiant, echecs_consecutifs, verrouille_jusqu_a) "
-            "VALUES (?, ?, ?) ON CONFLICT(identifiant) DO UPDATE SET "
-            "echecs_consecutifs=excluded.echecs_consecutifs, "
-            "verrouille_jusqu_a=excluded.verrouille_jusqu_a",
-            (identifiant, echecs, jusqu_a.isoformat() if jusqu_a else None),
-        )
-        conn.execute(
-            "INSERT INTO echecs (identifiant, horodatage, echecs_consecutifs, "
-            "verrouillage_declenche) VALUES (?, ?, ?, ?)",
-            (identifiant, _maintenant().isoformat(timespec="seconds"), echecs, declenche),
-        )
-        conn.commit()
-    finally:
-        conn.close()
+            conn.execute(
+                "INSERT INTO etat (identifiant, echecs_consecutifs, verrouille_jusqu_a) "
+                "VALUES (?, ?, ?) ON CONFLICT(identifiant) DO UPDATE SET "
+                "echecs_consecutifs=excluded.echecs_consecutifs, "
+                "verrouille_jusqu_a=excluded.verrouille_jusqu_a",
+                (identifiant, echecs, jusqu_a.isoformat() if jusqu_a else None),
+            )
+            conn.execute(
+                "INSERT INTO echecs (identifiant, horodatage, echecs_consecutifs, "
+                "verrouillage_declenche) VALUES (?, ?, ?, ?)",
+                (identifiant, _maintenant().isoformat(timespec="seconds"), echecs, declenche),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     return etat_verrouillage(identifiant)
 

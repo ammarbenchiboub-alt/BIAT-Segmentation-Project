@@ -46,7 +46,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 from typing import Any, Callable
 
 from core.rules_loader import CHEMIN_REGLES
@@ -96,14 +95,16 @@ def appliquer_proposition(
     annulations: list[Callable[[], None]] = []
 
     # Sauvegarde de l'etat initial du fichier de regles, AVANT toute
-    # modification. Copie sur disque (et non seulement en memoire) pour que la
-    # restauration reste possible meme si le processus manque de memoire.
-    sauvegarde = chemin_regles + ".backup"
+    # modification. Conservee EN MEMOIRE : le fichier de regles fait ~20 Ko, et
+    # une copie sur disque n'apporterait rien ici tout en ajoutant un fichier
+    # temporaire a nettoyer et un point de defaillance supplementaire (c'est
+    # precisement ce que faisait une premiere version de ce module : elle
+    # ecrivait un .backup qui n'etait ensuite jamais relu, la restauration se
+    # faisant deja depuis la memoire).
     contenu_initial: bytes | None = None
     if os.path.exists(chemin_regles):
         with open(chemin_regles, "rb") as f:
             contenu_initial = f.read()
-        shutil.copy2(chemin_regles, sauvegarde)
 
     def _restaurer_regles() -> None:
         if contenu_initial is not None:
@@ -160,9 +161,6 @@ def appliquer_proposition(
             f"Echec de l'application du changement : {exc}. Aucune modification n'a ete "
             f"appliquee, le systeme est revenu a son etat initial{detail}."
         ), None
-    finally:
-        if os.path.exists(sauvegarde):
-            os.remove(sauvegarde)
 
     return True, (
         f"Proposition #{id_proposition} confirmee et appliquee (version {version_id})."

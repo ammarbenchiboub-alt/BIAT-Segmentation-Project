@@ -56,6 +56,7 @@ seuils exige qu'un second administrateur confirme ce qu'un premier a propose.
 app.py                            Point d'entree Streamlit (navigation + pages)
 config/regles_segmentation.json   Regles (SOURCE UNIQUE)
 config/versions/                  Historique horodate des regles
+commun/      socle technique (ouverture SQLite durable) -- sans metier
 core/        engine.py (MOTEUR UNIQUE) + rules_loader.py + ml_anomaly.py
 auth/        authentification locale + protection force brute
 audit/       journal d'audit persistant (SQLite, chaine par hash + ancre)
@@ -69,7 +70,7 @@ ui/          theme premium (CSS, entete, cartes)
 templates/   generateur du modele Excel
 data/        note de reference + exemple d'import
 docs/        documentation et fiches de competences
-tests/       tests (moteur, auth, audit, gouvernance, cache)
+tests/       tests (moteur, auth, audit, gouvernance, cache, concurrence, ML)
 ```
 
 ## Regle d'or : le sens des dependances
@@ -86,11 +87,20 @@ tests/       tests (moteur, auth, audit, gouvernance, cache)
    simulateur  import CSV  chatbot   assistant  dashboard
 ```
 
-- `core/engine.py` **n'importe aucun** des autres modules applicatifs.
+- `core/engine.py` **n'importe aucun** des autres modules applicatifs, ni
+  scikit-learn, ni numpy.
 - `core/ml_anomaly.py` **n'importe jamais** `core/engine.py` : le module ML est
   structurellement incapable d'influencer une segmentation.
+- `import core` **ne charge pas** le module ML : le moteur reste utilisable et
+  testable sans la pile scikit-learn.
 - `audit/`, `auth/`, `gouvernance/` sont independants du moteur : ils
   enregistrent ou encadrent des decisions, ils n'en prennent aucune.
+- `commun/` ne contient que du technique (ouverture SQLite) : aucun seuil,
+  aucun segment, aucune regle. Il est donc importable par toutes les couches
+  sans jamais creer de dependance vers le metier.
+
+Ces regles ne sont pas seulement documentees : `tests/test_ml.py` les verifie
+(echec du test si `engine.py` se met a importer le module ML, par exemple).
 
 ---
 
@@ -152,11 +162,51 @@ Verification via la page **Journal d'audit** -> *Verifier l'integrite*.
 
 `journal_mode=DELETE` + `synchronous=FULL` (au lieu de `MEMORY`) : une
 transaction interrompue est annulee proprement plutot que de corrompre la
-base, et une entree confirmee est reellement ecrite sur le disque. Plus lent
-(un `fsync` par entree), sans consequence au volume vise. WAL a ete ecarte :
-ses fichiers `-wal`/`-shm` sont precisement ce qui echoue sur les partages
-reseau. Repli automatique sur `MEMORY` si l'environnement refuse le mode
-durable.
+base, et une entree confirmee est reellement ecrite sur le disque. WAL a ete
+ecarte : ses fichiers `-wal`/`-shm` sont precisement ce qui echoue sur les
+partages reseau. Repli automatique sur `MEMORY` si l'environnement refuse le
+mode durable.
+
+Configuration definie **une seule fois** dans `commun/base_sqlite.py`, pour les
+trois bases (audit, gouvernance, tentatives). Elle etait auparavant recopiee
+dans chaque module, et les copies avaient diverge : la base de gouvernance
+etait restee en `MEMORY`, donc non durable.
+
+---
+
+# Concurrence
+
+Streamlit sert **chaque session dans un thread du meme processus** : deux
+conseillers qui utilisent l'application au meme instant executent reellement le
+meme code en parallele. Ce n'est pas un cas theorique.
+
+Deux protections, complementaires, sur chaque cycle « lire un etat puis
+l'ecrire » :
+
+| Mecanisme | Portee | Ce qu'il empeche |
+|---|---|---|
+| `threading.Lock` | threads du processus Streamlit | le cas reel et frequent |
+| `BEGIN IMMEDIATE` | processus distincts | 2e instance, script de maintenance |
+
+`BEGIN IMMEDIATE` est indispensable : sans lui, SQLite n'acquiert le verrou
+d'ecriture qu'au **premier INSERT**, donc **apres** la lecture preparatoire —
+la fenetre de course resterait ouverte.
+
+Defauts corriges (chacun couvert par `tests/test_concurrence.py`) :
+
+- **Fourche de la chaine d'audit** : deux ecrivains simultanes lisaient le meme
+  `hash_precedent` et produisaient deux entrees referencant le meme parent —
+  alteration **irreversible**, signalee ensuite a tort comme une falsification.
+- **Ecritures concurrentes impossibles** : 19 sur 20 echouaient
+  (`PermissionError`), toutes les ecritures de l'ancre passant par un meme
+  fichier temporaire. Le nom du temporaire inclut desormais PID et thread.
+- **Compteur d'echecs non deterministe** : 20 tentatives paralleles n'en
+  comptabilisaient que 10 (mises a jour perdues). Un compteur de securite dont
+  le resultat depend du timing n'en est pas un.
+- **Double validation appliquee deux fois** : deux administrateurs confirmant
+  au meme instant validaient tous deux la meme proposition (TOCTOU entre la
+  lecture du statut et sa mise a jour), produisant deux versions archivees et
+  deux entrees d'audit pour un seul acte de gouvernance.
 
 ---
 
@@ -263,6 +313,26 @@ C'est aussi cette empreinte qui identifie la version des regles dans le
 journal d'audit : **une seule definition** de « version des regles » dans
 toute l'application.
 
+## Autres optimisations
+
+| Chemin | Avant | Apres | Facteur |
+|---|---|---|---|
+| Analyse ML d'un import (5 000 lignes) | 73,4 s | 0,18 s | **×400** |
+| Import CSV complet (5 000 lignes) | 74,4 s | 1,37 s | **×54** |
+| Journalisation d'un lot (300 lignes) | 8,31 s | 0,06 s | **×138** |
+| Moteur / chatbot / assistant par rerun | reconstruits | mis en cache | — |
+
+- **Analyse ML vectorisee** : `analyser_dataframe` appelait le modele **ligne
+  par ligne** (`df.iterrows()`), reconstruisant un DataFrame d'une ligne a
+  chaque fois, et calculait des explications textuelles aussitot jetees. Un
+  seul appel suffit : Isolation Forest note chaque ligne independamment des
+  autres. Resultats **identiques au bit pres** (verifie par `tests/test_ml.py`,
+  et non suppose).
+- **Journalisation par lot** : un import ecrit desormais toutes ses entrees en
+  **une transaction**, avec **une** lecture du fichier de regles et **une**
+  ecriture d'ancre. Auparavant : un `fsync` et une relecture du JSON **par
+  ligne**.
+
 ---
 
 # Securite — synthese
@@ -276,9 +346,17 @@ toute l'application.
 | Acces          | RBAC 3 roles, defense en profondeur                           |
 | Tracabilite    | journal append-only, chaine par hash + ancre externe          |
 | Durabilite     | `journal_mode=DELETE` + `synchronous=FULL`                    |
-| Separation     | Maker-Checker, auto-confirmation impossible                   |
+| Concurrence    | verrou de thread + `BEGIN IMMEDIATE` sur tout cycle lire/ecrire |
+| Separation     | Maker-Checker, auto-confirmation impossible (meme en parallele) |
 | Coherence      | application des regles transactionnelle avec rollback         |
 | Secrets        | comptes et bases jamais versionnes (`.gitignore`)             |
+
+## Comportement en cas de panne du journal (choix delibere)
+
+Si le journal d'audit ne peut pas ecrire, la segmentation **echoue** au lieu
+d'etre affichee sans trace. C'est un choix : en contexte bancaire, une decision
+non tracee vaut moins qu'une decision refusee. La consequence est assumee — un
+journal indisponible bloque l'application.
 
 ## Limites connues (assumees)
 
@@ -295,6 +373,17 @@ toute l'application.
 - **Verrouillage par compte** (et non par IP) : adapte a un deploiement interne
   ou l'IP vue par l'application n'est pas fiable. Un attaquant peut encore
   verrouiller volontairement un compte (deni de service cible).
+- **Concurrence multi-processus** : le verrou de thread ne couvre qu'un
+  processus ; `BEGIN IMMEDIATE` prend le relais entre processus. Un deploiement
+  reellement multi-instances (plusieurs serveurs, base partagee) exigerait un
+  SGBD serveur (PostgreSQL) plutot que SQLite.
+- **`verifier_integrite()` charge tout le journal en memoire** : sans effet aux
+  volumes vises (quelques milliers d'entrees), a revoir en lecture par blocs
+  au-dela de ~100 000 entrees.
+- **Re-segmentation a chaque rerun** : tant qu'un fichier reste charge dans la
+  page Import CSV, il est re-segmente a chaque interaction (~1,4 s pour 5 000
+  lignes, contre 74 s avant optimisation). Acceptable en l'etat ; un
+  `@st.cache_data` sur le contenu du fichier l'eliminerait.
 
 ---
 
@@ -328,13 +417,19 @@ aurait contredit l'objectif de reproductibilite. Chaque suite est **isolee**
 (dossier temporaire) et ne touche ni au journal, ni aux comptes, ni aux regles
 reels.
 
-| Suite                 | Couvre                                                    |
-|-----------------------|-----------------------------------------------------------|
-| `test_moteur.py`      | non-regression metier : 31 cas issus des seuils de la note |
-| `test_auth.py`        | hachage, verification, force brute, verrouillage, journal  |
-| `test_audit.py`       | chaine, ancre, 8 scenarios d'alteration, durabilite        |
-| `test_gouvernance.py` | Maker-Checker, transactionnel, rollback sur panne injectee |
-| `test_cache.py`       | stabilite et invalidation du cache, API inchangee          |
+| Suite                  | Couvre                                                    |
+|------------------------|-----------------------------------------------------------|
+| `test_moteur.py`       | non-regression metier : 31 cas issus des seuils de la note |
+| `test_auth.py`         | hachage, verification, force brute, verrouillage, journal  |
+| `test_audit.py`        | chaine, ancre, 8 scenarios d'alteration, durabilite        |
+| `test_gouvernance.py`  | Maker-Checker, transactionnel, rollback sur panne injectee |
+| `test_cache.py`        | stabilite et invalidation du cache, API inchangee          |
+| `test_concurrence.py`  | ecritures paralleles, fourche de chaine, TOCTOU, perfs     |
+| `test_ml.py`           | vectorisation a l'identique, accord de version, isolation  |
+
+Les suites `test_concurrence.py` et `test_ml.py` sont nees de la revue
+d'architecture : chaque cas y verrouille un defaut **reellement constate et
+mesure**, pas un risque suppose.
 
 ## Non-regression du moteur
 

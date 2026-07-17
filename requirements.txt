@@ -13,19 +13,26 @@
 #   2. Integrite du modele ML : core/ml_model/anomaly_pipeline.joblib est un
 #      objet scikit-learn serialise. Le recharger avec une version de
 #      scikit-learn differente de celle qui l'a produit est explicitement non
-#      supporte (avertissement InconsistentVersionWarning, voire erreur de
-#      deserialisation). Figer scikit-learn protege ce fichier.
+#      supporte (avertissement InconsistentVersionWarning : "might lead to
+#      breaking code or invalid results").
+#      ATTENTION : figer la version ne suffit PAS a lui seul -- encore faut-il
+#      que le modele LIVRE ait ete produit par la version figee. Le modele
+#      livre ici avait ete entraine avec scikit-learn 1.7.2 alors que cette
+#      ligne figeait la 1.9.0 : il a ete reentraine avec la 1.9.0 pour retablir
+#      l'accord. tests/test_ml.py verrouille desormais cette coherence (il
+#      echoue si le modele livre et la version figee divergent a nouveau).
 #   3. numpy est desormais declare explicitement : core/ml_anomaly.py
 #      l'importe directement ("import numpy as np"). Il n'etait installe que
 #      comme dependance transitive de pandas/scikit-learn, ce qui rendait
 #      l'application dependante d'un paquet qu'elle ne declarait pas.
 #
-# Versions relevees le 2026-07-16 sur l'environnement de reference
-# (Python 3.13.0, Windows 11) ou la totalite des tests passe.
+# Versions relevees sur l'environnement de reference (Python 3.13.0,
+# Windows 11) ou la totalite des tests passe.
 #
-# Mise a jour : modifier une version ici, puis relancer "python tests/run_all.py".
-# Si scikit-learn change, reentrainer le modele ML (page Tableau de bord ->
-# "Reentrainer le modele de detection d'anomalies").
+# Mise a jour d'une version : la modifier ici, puis relancer
+# "python tests/run_all.py". Si scikit-learn change, REENTRAINER le modele ML
+# (Tableau de bord -> "Reentrainer le modele de detection d'anomalies"), sans
+# quoi tests/test_ml.py echouera -- c'est voulu.
 
 streamlit==1.55.0
 pandas==2.3.3

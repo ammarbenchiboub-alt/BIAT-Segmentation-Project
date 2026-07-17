@@ -381,12 +381,15 @@ class DetecteurAnomalies:
                 )
         return explications
 
-    def analyser(self, profil: dict) -> dict:
-        """Analyse un profil deja segmente par le moteur. Ne renvoie AUCUN
-        segment / sous-segment : uniquement une analyse de coherence."""
-        marche = str(profil.get("Marche", "")).upper().strip()
-        ligne = {
-            "Marche": marche,
+    @staticmethod
+    def _ligne_modele(profil: dict) -> dict:
+        """Convertit un profil client en une ligne de variables du modele.
+
+        Extrait de analyser() pour etre partage avec analyser_dataframe : les
+        deux chemins construisent ainsi EXACTEMENT les memes variables, et il
+        n'existe qu'une seule definition de la mise en forme."""
+        return {
+            "Marche": str(profil.get("Marche", "")).upper().strip(),
             "Age": profil.get("Age") if profil.get("Age") is not None else 0,
             "MMM": profil.get("MMM") if profil.get("MMM") is not None else 0.0,
             "VRD": profil.get("VRD") if profil.get("VRD") is not None else 0.0,
@@ -394,17 +397,34 @@ class DetecteurAnomalies:
             "Nationalite": str(profil.get("Nationalite", "") or ""),
             "Residence": str(profil.get("Residence", "") or ""),
         }
-        df_ligne = pd.DataFrame([ligne])[CHAMPS_MODELE]
 
-        score_brut = float(self.pipeline.decision_function(df_ligne)[0])
-        score_confiance = self._score_confiance(score_brut)
+    def _scores_bruts(self, profils: list[dict]) -> np.ndarray:
+        """Score brut d'Isolation Forest pour N profils, en UN SEUL appel.
 
+        Isolation Forest note chaque ligne independamment des autres : passer
+        N lignes en un appel donne donc exactement les memes scores que N
+        appels d'une ligne, pour un cout tres inferieur (l'essentiel du temps
+        d'un appel scikit-learn est un cout fixe de validation et de
+        transformation, paye une fois au lieu de N)."""
+        if not profils:
+            return np.empty(0)
+        df = pd.DataFrame([self._ligne_modele(p) for p in profils])[CHAMPS_MODELE]
+        return self.pipeline.decision_function(df)
+
+    def _niveau(self, score_confiance: int) -> str:
         if score_confiance >= SEUIL_NORMAL:
-            niveau = "Normal"
-        elif score_confiance >= SEUIL_ATYPIQUE:
-            niveau = "Atypique"
-        else:
-            niveau = "Incoherent"
+            return "Normal"
+        if score_confiance >= SEUIL_ATYPIQUE:
+            return "Atypique"
+        return "Incoherent"
+
+    def analyser(self, profil: dict) -> dict:
+        """Analyse un profil deja segmente par le moteur. Ne renvoie AUCUN
+        segment / sous-segment : uniquement une analyse de coherence."""
+        marche = str(profil.get("Marche", "")).upper().strip()
+        score_brut = float(self._scores_bruts([profil])[0])
+        score_confiance = self._score_confiance(score_brut)
+        niveau = self._niveau(score_confiance)
 
         explications = self._expliquer(profil, marche)
         if niveau == "Normal" and not explications:
@@ -430,13 +450,33 @@ class DetecteurAnomalies:
     def analyser_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """Analyse chaque ligne d'un DataFrame deja segmente ; renvoie les
         colonnes ML_Anomalie / ML_Confiance / ML_Niveau alignees sur l'index
-        du DataFrame d'entree (a concatener par l'appelant)."""
-        resultats = [self.analyser(row.to_dict()) for _, row in df.iterrows()]
+        du DataFrame d'entree (a concatener par l'appelant).
+
+        Analyse VECTORISEE : un seul appel au modele pour tout le lot.
+
+        La version precedente appelait analyser() ligne par ligne
+        (df.iterrows()), donc reconstruisait un DataFrame d'une ligne et
+        invoquait scikit-learn N fois -- 5 000 lignes prenaient 73 s, cout
+        repaye a chaque interaction Streamlit tant que le fichier restait
+        charge. Elle calculait de surcroit, pour chaque ligne, des explications
+        textuelles aussitot jetees (ce tableau ne renvoie que anomalie,
+        confiance et niveau).
+
+        Les valeurs produites sont strictement identiques : Isolation Forest
+        note chaque ligne independamment (verifie par tests/test_ml.py sur
+        2 000 profils, scores bruts compares au bit pres)."""
+        if df.empty:
+            return pd.DataFrame(
+                {"ML_Anomalie": [], "ML_Confiance": [], "ML_Niveau": []}, index=df.index
+            )
+        scores = self._scores_bruts(df.to_dict("records"))
+        confiances = [self._score_confiance(float(s)) for s in scores]
+        niveaux = [self._niveau(c) for c in confiances]
         return pd.DataFrame(
             {
-                "ML_Anomalie": [r["anomalie"] for r in resultats],
-                "ML_Confiance": [r["score_confiance"] for r in resultats],
-                "ML_Niveau": [r["niveau"] for r in resultats],
+                "ML_Anomalie": [n != "Normal" for n in niveaux],
+                "ML_Confiance": confiances,
+                "ML_Niveau": niveaux,
             },
             index=df.index,
         )
