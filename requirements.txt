@@ -1,5 +1,35 @@
-streamlit>=1.30
-pandas>=2.0
-openpyxl>=3.1
-scikit-learn>=1.3
-joblib>=1.3
+# =========================================================================
+#  BIAT - Segmentation client : dependances figees (reproductibilite)
+# =========================================================================
+# Versions EXACTES (==) et non minimales (>=).
+#
+# Pourquoi figer :
+#   1. Reproductibilite : "pip install -r requirements.txt" installe
+#      aujourd'hui, sur un autre poste et dans deux ans, exactement le meme
+#      environnement. Avec ">=", deux installations a deux dates differentes
+#      pouvaient donner deux environnements differents -- et donc, en theorie,
+#      deux comportements differents pour une application dont la vocation est
+#      d'etre auditable.
+#   2. Integrite du modele ML : core/ml_model/anomaly_pipeline.joblib est un
+#      objet scikit-learn serialise. Le recharger avec une version de
+#      scikit-learn differente de celle qui l'a produit est explicitement non
+#      supporte (avertissement InconsistentVersionWarning, voire erreur de
+#      deserialisation). Figer scikit-learn protege ce fichier.
+#   3. numpy est desormais declare explicitement : core/ml_anomaly.py
+#      l'importe directement ("import numpy as np"). Il n'etait installe que
+#      comme dependance transitive de pandas/scikit-learn, ce qui rendait
+#      l'application dependante d'un paquet qu'elle ne declarait pas.
+#
+# Versions relevees le 2026-07-16 sur l'environnement de reference
+# (Python 3.13.0, Windows 11) ou la totalite des tests passe.
+#
+# Mise a jour : modifier une version ici, puis relancer "python tests/run_all.py".
+# Si scikit-learn change, reentrainer le modele ML (page Tableau de bord ->
+# "Reentrainer le modele de detection d'anomalies").
+
+streamlit==1.55.0
+pandas==2.3.3
+openpyxl==3.1.5
+scikit-learn==1.9.0
+joblib==1.5.3
+numpy==2.4.3

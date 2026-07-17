@@ -135,6 +135,31 @@ def confirmer(id_proposition: int, utilisateur: dict[str, Any]) -> tuple[bool, s
     return True, "Proposition confirmee et appliquee.", json.loads(proposition["regles_json"])
 
 
+def rouvrir(id_proposition: int) -> None:
+    """Repasse une proposition VALIDEE a l'etat EN_ATTENTE.
+
+    USAGE STRICTEMENT RESERVE au rollback transactionnel (voir
+    gouvernance/application_regles.py) : si une etape POSTERIEURE a la
+    confirmation echoue (ecriture du fichier de regles, versionnement,
+    journalisation), la confirmation doit etre annulee pour que l'ensemble de
+    l'operation soit sans effet -- une proposition marquee VALIDEE alors que
+    les regles n'ont pas ete appliquees serait un mensonge de l'historique.
+
+    N'est volontairement PAS exposee dans gouvernance/__init__.py : ce n'est
+    pas une action metier offerte a l'utilisateur, et elle ne doit jamais
+    servir a "devalider" une proposition reellement appliquee."""
+    conn = _connexion()
+    try:
+        conn.execute(
+            "UPDATE propositions SET statut='EN_ATTENTE', confirme_par=NULL, "
+            "nom_confirme_par=NULL, horodatage_confirmation=NULL WHERE id=?",
+            (id_proposition,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def rejeter(id_proposition: int, utilisateur: dict[str, Any]) -> tuple[bool, str]:
     proposition = obtenir(id_proposition)
     if not proposition:

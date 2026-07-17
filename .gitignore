@@ -1,18 +1,92 @@
-# Python
+# =========================================================================
+#  BIAT - Segmentation client : fichiers exclus du depot
+# =========================================================================
+# Regle generale : tout ce qui est REGENERE par l'application au demarrage,
+# ou propre a un poste, reste hors du depot. Seules les sources et les
+# donnees de reference (regles, note, modele ML) sont versionnees.
+
+# --- Python ---------------------------------------------------------------
 __pycache__/
 *.py[cod]
+*$py.class
+*.so
 *.egg-info/
+build/
+dist/
+.eggs/
+
+# --- Environnements virtuels ---------------------------------------------
 .venv/
 venv/
 env/
+ENV/
 
-# Runtime state (auto-generated, not source)
+# --- Etat d'execution (regenere automatiquement, ne doit jamais etre livre) -
+# Comptes locaux : contient les hash + sels des mots de passe. Recree au
+# premier lancement par auth/utilisateurs.py. Livrer ce fichier reviendrait a
+# publier les empreintes des mots de passe et a figer les comptes de demo.
 auth/utilisateurs.json
-audit/journal.sqlite3
-gouvernance/propositions.sqlite3
 
-# OS / editor
-.DS_Store
-Thumbs.db
-.idea/
+# Bases SQLite : journal d'audit, workflow de propositions, compteur de
+# tentatives de connexion. Ce sont des donnees d'exploitation propres a chaque
+# installation, pas des sources.
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+
+# Ancre d'integrite du journal d'audit : temoin local, indissociable du
+# journal.sqlite3 du poste. La versionner n'aurait aucun sens (elle ferait
+# echouer le controle d'integrite sur toute autre installation).
+audit/ancre.json
+
+# --- Fichiers temporaires -------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.backup
+*.orig
+*.rej
+*.log
+*~
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# --- Editeurs / IDE -------------------------------------------------------
 .vscode/
+.idea/
+*.swp
+*.swo
+*.sublime-workspace
+*.sublime-project
+.spyderproject
+.spyproject
+
+# --- Systeme d'exploitation ----------------------------------------------
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Streamlit ------------------------------------------------------------
+# Peut contenir des secrets de deploiement (secrets.toml).
+.streamlit/secrets.toml
+
+# =========================================================================
+# VOLONTAIREMENT VERSIONNES (ne pas ajouter aux exclusions) :
+#   config/regles_segmentation.json  source unique des regles metier
+#   config/versions/                 historique des versions de regles
+#   core/ml_model/*.joblib           modele ML livre (evite un reentrainement
+#                                    au premier lancement)
+#   assets/logo_biat.png             identite visuelle
+#   data/                            note de reference + exemple d'import
+# =========================================================================

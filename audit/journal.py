@@ -18,6 +18,24 @@ Principes :
       (y compris en modifiant directement le fichier .sqlite3 hors de
       l'application) casse la chaine et devient detectable via
       verifier_integrite().
+    - Ancre d'integrite EXTERNE (audit/ancre.json, hors de journal.sqlite3) :
+      le chainage seul ne detecte PAS la suppression des DERNIERES entrees.
+      En effet, supprimer les N derniers enregistrements laisse une chaine
+      qui reste parfaitement valide depuis la genese : rien, dans le fichier
+      .sqlite3, ne dit combien d'entrees devraient exister. L'ancre corrige
+      ce angle mort en conservant, a l'exterieur de la base, le nombre
+      d'entrees attendu et le hash de la derniere entree. verifier_integrite()
+      confronte systematiquement le journal a cette ancre.
+
+Matrice de detection (voir verifier_integrite) :
+
+    | Attaque                        | Detectee par                      |
+    |--------------------------------|-----------------------------------|
+    | Modification d'une entree      | recalcul du hash de l'entree      |
+    | Reorganisation des entrees     | chainage hash_precedent           |
+    | Suppression au milieu          | chainage hash_precedent           |
+    | Suppression des dernieres      | ancre externe (nombre + hash)     |
+    | Ajout d'entrees non tracees    | ancre externe (nombre + hash)     |
     - Chaque entree enregistre la version exacte du fichier de regles utilisee
       (hash SHA-256 de regles_segmentation.json au moment de la decision), afin
       de pouvoir justifier une decision meme apres une evolution ulterieure
@@ -38,19 +56,48 @@ from typing import Any
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 CHEMIN_JOURNAL = os.path.join(_BASE_DIR, "journal.sqlite3")
+# Ancre d'integrite : volontairement HORS de journal.sqlite3, pour qu'une
+# alteration du journal ne puisse pas ajuster en meme temps le temoin qui
+# permet de la detecter.
+CHEMIN_ANCRE = os.path.join(_BASE_DIR, "ancre.json")
 
 _GENESE = "GENESE"
 
 
 def _connexion() -> sqlite3.Connection:
     conn = sqlite3.connect(CHEMIN_JOURNAL)
-    # Journal de transaction SQLite garde en memoire plutot que sur disque :
-    # certains environnements de fichiers synchronises/reseau ne supportent
-    # pas correctement le verrouillage par fichier journal classique
-    # (erreur "disk I/O error" observee en test). Sans impact reel ici (usage
-    # mono-utilisateur, faible volume) : seule la fenetre de tolerance aux
-    # pannes en cas de crash exact pendant une ecriture est legerement reduite.
-    conn.execute("PRAGMA journal_mode=MEMORY")
+    # --- Durabilite (revue 2.0) --------------------------------------------
+    # AVANT : PRAGMA journal_mode=MEMORY. Ce mode avait ete retenu parce que
+    # certains environnements de fichiers synchronises/reseau echouaient sur
+    # le verrouillage du journal de transaction ("disk I/O error"). Mais il
+    # garde le journal de rollback en RAM : un crash pendant une ecriture peut
+    # laisser la base CORROMPUE, et non simplement revenue en arriere. Pour un
+    # journal d'audit dont l'interet est precisement d'etre opposable, c'est
+    # le mauvais compromis.
+    #
+    # MAINTENANT : DELETE + synchronous=FULL, avec repli sur l'ancien mode si
+    # l'environnement le refuse vraiment.
+    #   DELETE           journal de rollback sur disque -> une transaction
+    #                    interrompue est annulee proprement, jamais corrompue.
+    #   synchronous=FULL fsync a chaque commit -> une entree confirmee est
+    #                    reellement sur le disque, meme en cas de coupure.
+    # Inconvenients assumes : ecriture plus lente (un fsync par entree) et
+    # concurrence en ecriture plus faible qu'en WAL. Sans consequence ici :
+    # usage mono-utilisateur, faible volume, et la durabilite prime sur le
+    # debit pour un journal d'audit.
+    #
+    # WAL a ete ecarte : plus rapide et meilleur en concurrence, mais il
+    # s'appuie sur de la memoire partagee (fichiers -wal / -shm) qui est
+    # justement ce qui casse sur les partages reseau vises par le commentaire
+    # d'origine. DELETE est le mode le plus portable ET durable.
+    try:
+        conn.execute("PRAGMA journal_mode=DELETE")
+        conn.execute("PRAGMA synchronous=FULL")
+    except sqlite3.DatabaseError:  # pragma: no cover - environnement degrade
+        # Repli : mieux vaut un journal fonctionnel en mode degrade qu'une
+        # application qui ne demarre pas. L'ancre externe continue, elle, de
+        # detecter toute alteration.
+        conn.execute("PRAGMA journal_mode=MEMORY")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS journal (
@@ -77,11 +124,78 @@ def _connexion() -> sqlite3.Connection:
 def _hash_regles_actives() -> str:
     """Empreinte SHA-256 du fichier de regles au moment de l'enregistrement.
     Permet de savoir exactement quelle version des seuils a produit une
-    decision donnee, meme si les seuils sont modifies plus tard."""
-    from core.rules_loader import CHEMIN_REGLES
+    decision donnee, meme si les seuils sont modifies plus tard.
 
-    with open(CHEMIN_REGLES, "rb") as f:
-        return hashlib.sha256(f.read()).hexdigest()[:16]
+    Delegue a core.rules_loader.empreinte_regles : meme empreinte que celle
+    qui sert de clef de cache au moteur, donc une seule definition de "version
+    des regles" dans toute l'application."""
+    from core.rules_loader import empreinte_regles
+
+    return empreinte_regles()
+
+
+# --------------------------------------------------------------------------- #
+# Ancre d'integrite externe (detection du tronquage de fin)
+# --------------------------------------------------------------------------- #
+def _lire_ancre() -> dict[str, Any] | None:
+    """Lit l'ancre. Renvoie None si elle n'existe pas encore."""
+    if not os.path.exists(CHEMIN_ANCRE):
+        return None
+    try:
+        with open(CHEMIN_ANCRE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        # Ancre illisible = ancre corrompue : traitee comme une anomalie par
+        # verifier_integrite, jamais ignoree silencieusement.
+        return {"_illisible": True}
+
+
+def _ecrire_ancre(nombre_entrees: int, dernier_hash: str) -> None:
+    """Ecrit l'ancre de facon atomique (fichier temporaire puis os.replace).
+
+    L'atomicite evite qu'une coupure pendant l'ecriture laisse une ancre
+    tronquee, qui ferait echouer a tort tous les controles ulterieurs."""
+    contenu = {
+        "nombre_entrees": nombre_entrees,
+        "dernier_hash": dernier_hash,
+        "horodatage": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "_avertissement": (
+            "Temoin d'integrite du journal d'audit. Ne pas modifier ni supprimer : "
+            "toute divergence avec audit/journal.sqlite3 est signalee comme une "
+            "alteration lors du controle d'integrite."
+        ),
+    }
+    temporaire = CHEMIN_ANCRE + ".tmp"
+    with open(temporaire, "w", encoding="utf-8") as f:
+        json.dump(contenu, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temporaire, CHEMIN_ANCRE)
+
+
+def assurer_ancre() -> dict[str, Any]:
+    """Cree l'ancre a partir de l'etat courant du journal si elle n'existe pas.
+
+    Necessaire pour CONSERVER L'HISTORIQUE EXISTANT : le journal a ete cree
+    avant l'introduction de l'ancre, on ne peut donc pas exiger qu'elle ait
+    toujours ete la. On l'initialise sur l'etat actuel.
+
+    Limite explicite et assumee : les entrees anterieures a la creation de
+    l'ancre ne sont couvertes contre le tronquage de fin qu'A PARTIR de cette
+    initialisation (une suppression qui aurait eu lieu AVANT est indetectable,
+    puisqu'aucun temoin n'existait). Le chainage de hash, lui, couvre bien
+    l'integralite de l'historique depuis la genese. Renvoie l'ancre en place."""
+    ancre = _lire_ancre()
+    if ancre is not None and not ancre.get("_illisible"):
+        return ancre
+    conn = _connexion()
+    try:
+        nombre = conn.execute("SELECT COUNT(*) FROM journal").fetchone()[0]
+        dernier = _derniere_entree(conn)
+    finally:
+        conn.close()
+    _ecrire_ancre(nombre, dernier)
+    return _lire_ancre()
 
 
 def _derniere_entree(conn: sqlite3.Connection) -> str:
@@ -108,6 +222,9 @@ def enregistrer(
     entree existante (append-only)."""
     horodatage = datetime.now(timezone.utc).isoformat(timespec="seconds")
     version_regles = _hash_regles_actives()
+    # Garantit qu'une ancre existe AVANT le premier ajout, pour que le compteur
+    # parte d'un etat connu plutot que d'etre initialise apres coup.
+    assurer_ancre()
 
     conn = _connexion()
     try:
@@ -139,8 +256,16 @@ def enregistrer(
             {**champs, "hash_precedent": hash_precedent, "hash_entree": hash_entree},
         )
         conn.commit()
+        nombre_entrees = conn.execute("SELECT COUNT(*) FROM journal").fetchone()[0]
     finally:
         conn.close()
+
+    # Ancre mise a jour APRES le commit : si l'application est interrompue
+    # entre les deux, le journal contient une entree de plus que l'ancre. Ce
+    # cas est signale distinctement d'un tronquage par verifier_integrite
+    # (journal en avance = ecriture interrompue ; journal en retard = entrees
+    # supprimees), et n'entraine jamais de perte d'entree.
+    _ecrire_ancre(nombre_entrees, hash_entree)
 
 
 def enregistrer_lot(
@@ -219,9 +344,22 @@ def compter() -> int:
 
 
 def verifier_integrite() -> tuple[bool, str]:
-    """Recalcule la chaine de hash sur l'ensemble du journal et verifie
-    qu'aucune entree n'a ete modifiee ou supprimee hors de ce module. Renvoie
-    (True, message) si la chaine est intacte, (False, message) sinon."""
+    """Controle complet de l'integrite du journal. Renvoie (True, message) si
+    tout est intact, (False, message) decrivant l'anomalie sinon.
+
+    Deux controles complementaires, tous deux necessaires :
+
+    1. CHAINAGE (interne au journal) : chaque entree est rehachee et comparee
+       a son hash stocke, et le chainage hash_precedent est reverifie depuis
+       la genese. Detecte toute modification, reorganisation ou suppression
+       AU MILIEU de l'historique.
+
+    2. ANCRE EXTERNE (audit/ancre.json) : le nombre d'entrees et le hash de la
+       derniere entree sont compares au temoin conserve hors de la base.
+       Detecte la suppression des DERNIERES entrees (tail truncation), que le
+       chainage seul ne peut pas voir : un journal tronque par la fin reste
+       une chaine valide depuis la genese.
+    """
     conn = _connexion()
     try:
         lignes = conn.execute(
@@ -260,4 +398,62 @@ def verifier_integrite() -> tuple[bool, str]:
 
         hash_attendu = hash_entree
 
-    return True, f"Journal intact : {len(lignes)} entree(s) verifiee(s), chaine ininterrompue."
+    # --- Controle 2 : confrontation a l'ancre externe ----------------------
+    ancre = _lire_ancre()
+    if ancre is None:
+        # Aucun temoin : on ne peut rien affirmer sur le tronquage de fin.
+        # On le dit explicitement plutot que d'annoncer un journal "intact".
+        assurer_ancre()
+        return True, (
+            f"Chaine intacte : {len(lignes)} entree(s) verifiee(s). "
+            "Ancre d'integrite absente : elle vient d'etre initialisee sur l'etat "
+            "actuel. La detection de suppression des dernieres entrees sera active "
+            "a partir de maintenant."
+        )
+    if ancre.get("_illisible"):
+        return False, (
+            "Ancre d'integrite (audit/ancre.json) illisible ou corrompue : "
+            "impossible de garantir qu'aucune entree recente n'a ete supprimee."
+        )
+
+    attendu_nombre = ancre.get("nombre_entrees")
+    attendu_hash = ancre.get("dernier_hash")
+    if not isinstance(attendu_nombre, int) or not isinstance(attendu_hash, str):
+        return False, (
+            "Ancre d'integrite (audit/ancre.json) incomplete : champs 'nombre_entrees' "
+            "ou 'dernier_hash' absents ou invalides. Impossible de garantir qu'aucune "
+            "entree recente n'a ete supprimee."
+        )
+    reel_nombre = len(lignes)
+    reel_hash = lignes[-1][12] if lignes else _GENESE
+
+    if reel_nombre < attendu_nombre:
+        manquantes = attendu_nombre - reel_nombre
+        return False, (
+            f"ALTERATION DETECTEE : {manquantes} entree(s) manquante(s) en fin de journal "
+            f"({reel_nombre} presentes, {attendu_nombre} attendues d'apres l'ancre). "
+            "Suppression des enregistrements les plus recents."
+        )
+    if reel_nombre > attendu_nombre:
+        surplus = reel_nombre - attendu_nombre
+        if surplus == 1:
+            return False, (
+                "Incoherence : le journal contient 1 entree de plus que l'ancre. "
+                "Probable ecriture interrompue (arret entre l'ajout et la mise a jour "
+                "de l'ancre), ou entree ajoutee hors de l'application."
+            )
+        return False, (
+            f"ALTERATION DETECTEE : {surplus} entree(s) ajoutee(s) sans passer par "
+            f"l'application ({reel_nombre} presentes, {attendu_nombre} attendues)."
+        )
+    if reel_hash != attendu_hash:
+        return False, (
+            "ALTERATION DETECTEE : la derniere entree ne correspond pas a l'ancre "
+            "(nombre d'entrees correct mais hash de fin different). Des entrees ont "
+            "probablement ete supprimees puis remplacees."
+        )
+
+    return True, (
+        f"Journal intact : {len(lignes)} entree(s) verifiee(s), chaine ininterrompue "
+        "et conforme a l'ancre d'integrite externe (aucune suppression en fin de journal)."
+    )

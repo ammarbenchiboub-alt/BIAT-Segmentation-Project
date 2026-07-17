@@ -63,7 +63,9 @@ sous-segment et marche.
 Edition des seuils et des listes de professions via l'interface, sans code.
 
 ## 16. Technologies utilisees
-Python, Streamlit, pandas, openpyxl.
+Python, Streamlit, pandas, openpyxl, scikit-learn (module ML complementaire),
+SQLite (journal d'audit, gouvernance, tentatives de connexion). Dependances
+figees dans requirements.txt (versions exactes) pour la reproductibilite.
 
 ## 17. Structure des fichiers
 Voir README.md.
@@ -78,3 +80,19 @@ reverse proxy). Variables et fichiers de regles versionnes.
 ## 20. Journal des evolutions
 - v1.0.0 : moteur unique, 4 marches, simulateur, import CSV, chatbot,
   assistant IA, dashboard, parametrage. Regles extraites de la note 2023-06.
+- v2.0.0 : renforcement technique SANS aucune modification des regles metier
+  ni des resultats de segmentation (non-regression verifiee sur 715 008
+  profils, empreinte SHA-256 identique a la v1.0.0).
+  - Audit : ancre d'integrite externe (audit/ancre.json) detectant la
+    suppression des dernieres entrees, que le seul chainage de hash ne voyait
+    pas ; durabilite SQLite renforcee (journal_mode=DELETE + synchronous=FULL).
+  - Securite : protection contre la force brute (verrouillage configurable,
+    deverrouillage automatique, journalisation), comparaison a temps constant,
+    protection contre l'enumeration des comptes.
+  - Gouvernance : application des changements de regles rendue
+    transactionnelle (tout-ou-rien) avec rollback automatique.
+  - Performances : mise en cache du moteur (@st.cache_resource) invalidee
+    automatiquement, et uniquement, quand les regles changent.
+  - Qualite : dependances figees, tests etendus (auth, audit, gouvernance,
+    cache), depot nettoye (docs/, .gitignore).
+  Detail complet : voir README.md.

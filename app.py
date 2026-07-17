@@ -16,7 +16,7 @@ import pandas as pd
 import streamlit as st
 
 from core import MoteurSegmentation
-from core.rules_loader import CHEMIN_REGLES
+from core.rules_loader import CHEMIN_REGLES, empreinte_regles
 from chatbot import ChatbotExpert
 from assistant import AssistantIA
 from segmentation import segmenter_dataframe
@@ -28,15 +28,16 @@ from ui import (
     masthead, sidebar_brand,
 )
 from core.ml_anomaly import analyser_anomalie, analyser_dataframe, infos_modele, reentrainer_modele
-from auth import verifier_identifiants
+from auth import authentifier
 from audit import enregistrer as enregistrer_audit, enregistrer_lot as enregistrer_audit_lot
 from audit import lister as lister_audit, compter as compter_audit, verifier_integrite as verifier_integrite_audit
 from audit import lister_profils as lister_profils_audit
 from gouvernance import (
     proposer as proposer_changement, lister_en_attente as lister_propositions_en_attente,
-    lister_historique as lister_historique_propositions, confirmer as confirmer_proposition,
+    lister_historique as lister_historique_propositions,
     rejeter as rejeter_proposition, simuler_impact,
-    enregistrer_version, assurer_version_initiale, lister_versions, charger_version,
+    assurer_version_initiale, lister_versions, charger_version,
+    appliquer_proposition,
 )
 
 st.set_page_config(page_title="BIAT - Segmentation client", page_icon="🏦", layout="wide")
@@ -59,12 +60,19 @@ if st.session_state.auth is None:
             _mdp = st.text_input("Mot de passe", type="password")
             _valide = st.form_submit_button("Se connecter", use_container_width=True)
         if _valide:
-            _utilisateur = verifier_identifiants(_identifiant, _mdp)
-            if _utilisateur:
-                st.session_state.auth = _utilisateur
+            # authentifier() (et non verifier_identifiants()) : integre la
+            # protection contre les attaques par force brute -- verrouillage
+            # temporaire du compte apres N echecs, deverrouillage automatique,
+            # et journalisation des tentatives. Voir auth/tentatives.py.
+            _resultat = authentifier(_identifiant, _mdp)
+            if _resultat["succes"]:
+                st.session_state.auth = _resultat["utilisateur"]
                 st.rerun()
+            elif _resultat["verrouille"]:
+                # Compte verrouille : on affiche le temps restant exact.
+                st.error(f"🔒 {_resultat['message']}")
             else:
-                st.error("Identifiant ou mot de passe incorrect.")
+                st.error(_resultat["message"])
         st.caption(
             "Comptes de demonstration (PFE) : conseiller1 / admin1 / admin2 / auditeur1 "
             "-- mots de passe dans le README (admin1 et admin2 permettent de tester la "
@@ -73,16 +81,55 @@ if st.session_state.auth is None:
     st.stop()
 
 
-def get_moteur() -> MoteurSegmentation:
+# --------------------------------------------------------------------------- #
+# Cache du moteur unique
+# --------------------------------------------------------------------------- #
+# Streamlit reexecute TOUT ce script a chaque interaction (clic, saisie...).
+# Sans cache, chaque rerun relisait et reparsait regles_segmentation.json puis
+# reconstruisait le moteur, le chatbot et l'assistant -- un travail identique
+# repete des dizaines de fois par session.
+#
+# La clef de cache est l'EMPREINTE DU CONTENU du fichier de regles :
+#   - tant que les regles ne changent pas, l'empreinte est stable et la meme
+#     instance de moteur est reutilisee a chaque rerun ;
+#   - des qu'une proposition est appliquee (page Parametrage), le contenu du
+#     fichier change, donc l'empreinte change, donc Streamlit reconstruit
+#     automatiquement le moteur avec les nouveaux seuils.
+# L'invalidation est ainsi exacte : ni cache perime, ni reconstruction inutile.
+# Aucun appel manuel a .clear() n'est necessaire, ce qui supprime le risque
+# d'oublier d'invalider le cache lors d'une evolution future.
+#
+# Le parametre `empreinte` n'est pas utilise dans le corps de la fonction :
+# il ne sert qu'a faire partie de la clef de cache. C'est le mecanisme standard
+# de @st.cache_resource.
+@st.cache_resource(show_spinner=False)
+def _construire_moteur(empreinte: str) -> MoteurSegmentation:
     return MoteurSegmentation()
+
+
+@st.cache_resource(show_spinner=False)
+def _construire_chatbot(empreinte: str) -> ChatbotExpert:
+    return ChatbotExpert(_construire_moteur(empreinte))
+
+
+@st.cache_resource(show_spinner=False)
+def _construire_assistant(empreinte: str) -> AssistantIA:
+    return AssistantIA(_construire_moteur(empreinte))
+
+
+def get_moteur() -> MoteurSegmentation:
+    """Renvoie l'instance unique du moteur pour les regles actuellement en
+    vigueur. API inchangee : les appelants existants n'ont rien a modifier."""
+    return _construire_moteur(empreinte_regles())
 
 
 if "historique" not in st.session_state:
     st.session_state.historique = pd.DataFrame()
 
-moteur = get_moteur()
-chatbot = ChatbotExpert(moteur)
-assistant = AssistantIA(moteur)
+_EMPREINTE_REGLES = empreinte_regles()
+moteur = _construire_moteur(_EMPREINTE_REGLES)
+chatbot = _construire_chatbot(_EMPREINTE_REGLES)
+assistant = _construire_assistant(_EMPREINTE_REGLES)
 
 
 def ajouter_historique(lignes: list[dict]) -> None:
@@ -566,20 +613,20 @@ elif page == "Parametrage":
                 c_conf, c_rej = st.columns(2)
                 with c_conf:
                     if st.button("✅ Confirmer et appliquer", key=f"confirmer_{_p['id']}", use_container_width=True):
-                        _ok, _msg, _regles_a_appliquer = confirmer_proposition(_p["id"], st.session_state.auth)
-                        if _ok and _regles_a_appliquer is not None:
-                            with open(CHEMIN_REGLES, "w", encoding="utf-8") as f:
-                                json.dump(_regles_a_appliquer, f, ensure_ascii=False, indent=2)
-                            enregistrer_version(
-                                _regles_a_appliquer, st.session_state.auth, _p["description"],
-                                proposition_id=_p["id"],
-                            )
-                            enregistrer_audit(
-                                "MODIF_SEUIL", st.session_state.auth,
-                                {"Marche": "SYSTEME", "Description": _p["description"],
-                                 "Proposition_id": _p["id"], "Propose_par": _p["propose_par"]},
-                                None, None, f"PROPOSITION_{_p['id']}",
-                            )
+                        # Operation TRANSACTIONNELLE : confirmation + ecriture des
+                        # regles + versionnement + audit reussissent ensemble, ou
+                        # sont toutes annulees. Auparavant ces quatre etapes
+                        # etaient enchainees ici sans filet : une erreur au milieu
+                        # laissait un etat incoherent (regles appliquees sans
+                        # trace d'audit, ou proposition validee sans effet).
+                        # Voir gouvernance/application_regles.py.
+                        _ok, _msg, _version_id = appliquer_proposition(
+                            _p["id"], st.session_state.auth, enregistrer_audit,
+                        )
+                        if _ok:
+                            # Le cache du moteur s'invalide tout seul : le contenu
+                            # du fichier de regles a change, donc son empreinte
+                            # aussi (voir _construire_moteur).
                             st.success(_msg)
                             st.rerun()
                         else:

@@ -67,6 +67,25 @@ def enregistrer_version(
     return version_id
 
 
+def supprimer_version(version_id: str) -> None:
+    """Supprime un instantane de version et sa ligne de manifeste.
+
+    USAGE STRICTEMENT RESERVE au rollback transactionnel (voir
+    gouvernance/application_regles.py) : annule un enregistrer_version dont
+    une etape ULTERIEURE a echoue, afin de ne pas laisser dans l'historique
+    une version qui n'a jamais ete reellement appliquee.
+
+    N'est volontairement PAS exposee dans gouvernance/__init__.py : l'historique
+    des versions reste, du point de vue de l'utilisateur, strictement
+    append-only. Aucune action de l'interface ne permet d'effacer une version
+    appliquee."""
+    chemin = os.path.join(DOSSIER_VERSIONS, version_id)
+    if os.path.exists(chemin):
+        os.remove(chemin)
+    manifeste = [v for v in _charger_manifeste() if v.get("version_id") != version_id]
+    _sauvegarder_manifeste(manifeste)
+
+
 def assurer_version_initiale(regles_actuelles: dict) -> None:
     """A appeler au premier acces a la page Parametrage : si aucune version
     n'existe encore (mise en place du versionnement sur un projet deja en
