@@ -28,6 +28,7 @@ from ui import (
     masthead, sidebar_brand,
 )
 from core.ml_anomaly import analyser_anomalie, analyser_dataframe, infos_modele, reentrainer_modele
+from presentation import afficher_reponse
 from auth import authentifier
 from audit import enregistrer as enregistrer_audit, enregistrer_lot as enregistrer_audit_lot
 from audit import lister as lister_audit, compter as compter_audit, verifier_integrite as verifier_integrite_audit
@@ -464,9 +465,17 @@ elif page == "Chatbot Expert":
              "ou decrivez un profil (Marche, Age, MMM, VRD, Profession...) pour une aide a la decision."}
         ]
 
+    # Rendu de l'historique. Les tours de l'assistant portent desormais la
+    # reponse structuree (clef "rep") afin d'etre re-affiches avec le moteur de
+    # rendu intelligent (presentation.afficher_reponse) : carte de decision,
+    # KPI, checklist, liste ou encadre selon le contenu. Les messages en texte
+    # simple (clef "content", ex. le message d'accueil) restent supportes.
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
-            st.markdown(m["content"])
+            if m.get("rep") is not None:
+                afficher_reponse(m["rep"])
+            else:
+                st.markdown(m["content"])
 
     with st.expander("Exemples de questions"):
         st.markdown(
@@ -481,13 +490,13 @@ elif page == "Chatbot Expert":
         st.session_state.messages.append({"role": "user", "content": question})
         with st.chat_message("user"):
             st.markdown(question)
+        # La LOGIQUE reste inchangee : meme appel a chatbot.repondre(). Seul
+        # l'AFFICHAGE change : afficher_reponse choisit le composant le plus
+        # adapte (aucune modification fonctionnelle, cf. presentation/).
         rep = chatbot.repondre(question)
-        contenu = rep["reponse"]
-        if rep.get("source"):
-            contenu += f"\n\n_Source : {rep['source']}_"
         with st.chat_message("assistant"):
-            st.markdown(contenu)
-        st.session_state.messages.append({"role": "assistant", "content": contenu})
+            afficher_reponse(rep)
+        st.session_state.messages.append({"role": "assistant", "rep": rep})
 
 
 # --------------------------------------------------------------------------- #

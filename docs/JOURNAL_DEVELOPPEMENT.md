@@ -63,6 +63,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 13 | Factorisation du socle d'acces aux donnees (DRY) | Architecture |
 | 14 | Fiabilisation du chatbot expert : recherche et source unique | Correction / Gouvernance |
 | 15 | Import Excel multi-feuilles et finition de l'interface | Correction / UX |
+| 16 | Smart Response Renderer : moteur de rendu intelligent du chatbot | Experience utilisateur / Architecture |
 
 ---
 ---
@@ -2047,6 +2048,206 @@ L'import de masse fonctionne avec le fichier de test livre (30 cas segmentes,
 Excel multi-feuilles. L'interface ne presente plus de controles techniques a
 l'utilisateur final et affiche une consigne d'upload en francais. La
 fonctionnalite est prete pour une demonstration.
+---
+---
+
+# Note 16 — Smart Response Renderer : moteur de rendu intelligent du chatbot
+
+> **Origine** : demande d'amelioration de l'experience utilisateur du chatbot
+> expert. Objectif : des reponses plus claires, modernes et professionnelles,
+> avec un choix AUTOMATIQUE du meilleur composant d'affichage, **sans aucune
+> modification de la logique metier ni des reponses**.
+
+## Probleme identifie
+
+Toutes les reponses du chatbot etaient affichees de la meme facon : un bloc de
+texte via `st.markdown`, quel que soit leur contenu. Une aide a la decision
+(riche : segment, montants, conditions verifiees), une enumeration de segments
+et une simple definition recevaient un traitement visuel identique. Il en
+resultait des paves de texte peu lisibles, en decalage avec le niveau attendu
+d'une application bancaire professionnelle.
+
+## Analyse
+
+Le defaut n'etait pas fonctionnel — le chatbot repondait juste (cf. Note 14) —
+mais **presentationnel**. Or la presentation etait melangee a la logique : la
+page `app.py` recuperait `rep["reponse"]` (une chaine) et la rendait
+directement. Il n'existait aucune couche capable de decider d'une mise en forme
+selon le type de reponse.
+
+Deux exigences se dégageaient, en tension apparente :
+
+1. **Rendre l'affichage intelligent et varie** (cartes, KPI, listes, badges,
+   checklists, encadres...).
+2. **Ne rien changer a la logique metier** : memes regles, memes reponses,
+   memes sources.
+
+La cle pour les concilier : introduire une couche de PRESENTATION strictement
+separee, alimentee par ce que le chatbot produit deja, sans jamais recalculer
+ni reinterpreter une decision.
+
+## Solution retenue
+
+Creation d'un paquet dedie `presentation/` — le **Smart Response Renderer** —
+organise en deux niveaux volontairement disjoints :
+
+### 1. Le planificateur (`presentation/plan.py`) — pur, testable
+
+Une fonction totale `planifier_reponse(rep) -> list[Bloc]` transforme une
+reponse du chatbot en une liste de **blocs d'affichage abstraits** (Titre,
+Callout, CarteDecision, GroupeKPI, Checklist, ListeStructuree, Badges,
+Reference, Accordeon). Ce module **n'importe ni Streamlit ni le moteur** : c'est
+une fonction pure, donc la « decision de mise en forme » — l'intelligence du
+systeme — est entierement testable sans interface graphique.
+
+Regles de choix implementees :
+
+| Reponse | Composant retenu |
+|---|---|
+| Aide a la decision (profil segmente) | carte de decision + badges de contexte + KPI (Age/MMM/VRD) + checklist des conditions verifiees + reference |
+| Decision en echec | encadre d'alerte (pas de carte verte) |
+| Reponse enumeree (`A ; B ; C`) | liste structuree titree |
+| Enumeration finale (professions) | pastilles (chips) |
+| Reponse a un seul point | encadre de reference simple |
+| Absence d'information | encadre d'information |
+
+### 2. Le rendu (`presentation/rendu.py`) — adaptateur Streamlit
+
+`afficher_reponse(rep)` rend chaque bloc via Streamlit. Il **reutilise les
+composants et le theme existants** (`ui.kpi`, `ui.carte_segment`, `ui.section`,
+palette et classes `.badge`) plutot que d'introduire un style parallele. Les
+quelques composants nouveaux (encadre, checklist, liste titree, pastilles,
+reference) sont stylises en coherence avec la charte BIAT, dans un unique bloc
+CSS injecte une fois par page. L'association type de bloc -> fonction de rendu
+est un **registre** (`_RENDU`), ce qui rend l'ajout d'un composant trivial.
+
+L'integration dans `app.py` se limite a remplacer `st.markdown(contenu)` par
+`afficher_reponse(rep)`, et a stocker la reponse structuree dans l'historique
+pour que les tours passes soient re-affiches avec le meme rendu riche.
+
+## Justification technique
+
+**Pourquoi separer planification (pure) et rendu (Streamlit) ?**
+C'est le cœur de l'architecture. En isolant la DECISION de mise en forme dans
+une fonction pure, on obtient trois proprietes : (a) elle est testable a 100 %
+sans navigateur ni serveur ; (b) elle ne peut pas, par construction, alterer la
+logique metier puisqu'elle n'importe pas le moteur ; (c) le rendu concret
+devient un simple adaptateur interchangeable. C'est le meme principe qu'un
+« view-model » separant l'etat de la vue de son rendu.
+
+**Pourquoi ne PAS enrichir `chatbot.repondre()` pour qu'il renvoie des
+structures ?**
+Cela aurait melange logique et presentation dans le module metier, et surtout
+modifie le contrat teste du chatbot (les tests de la Note 14 verifient le texte
+des reponses). Le planificateur consomme la sortie EXISTANTE du chatbot : la
+logique reste donc rigoureusement intacte. Pour l'aide a la decision, le
+chatbot expose deja un objet structure (`ResultatSegmentation`) — le
+planificateur s'appuie dessus, sans rien recalculer.
+
+**Pourquoi un planificateur TOTAL (jamais d'exception, jamais vide) ?**
+La presentation ne doit jamais pouvoir casser l'application. Toute reponse, meme
+degeneree (dictionnaire vide, type inconnu, `None`), produit au moins un bloc
+texte. En cas de doute sur la structure d'une reponse de connaissance, le
+planificateur retombe sur un encadre simple : il ne peut donc jamais degrader la
+lisibilite EN DESSOUS de l'affichage texte d'origine.
+
+**Pourquoi une detection conservatrice des structures ?**
+Conformement a la consigne « ne jamais afficher un composant qui n'apporte
+aucune valeur » : une liste structuree n'est produite que si la reponse comporte
+reellement plusieurs elements separes ; des pastilles, que si une enumeration
+d'au moins quatre elements courts est presente. Sinon, encadre simple. Le
+systeme prefere la sobriete a la sur-structuration.
+
+**Pourquoi echapper le HTML (`html.escape`) ?**
+Les textes affiches proviennent de la note, mais l'echappement systematique
+avant injection dans les gabarits HTML previent toute anomalie de rendu et toute
+injection, par principe de defense en profondeur.
+
+## Fichiers modifies
+
+- `presentation/plan.py` (creation) — modele de blocs + planificateur pur
+- `presentation/rendu.py` (creation) — adaptateur Streamlit + CSS + registre
+- `presentation/__init__.py` (creation) — API `afficher_reponse`
+- `app.py` — page Chatbot : rendu via `afficher_reponse`, historique structure
+- `tests/test_presentation.py` (creation)
+- `tests/run_all.py` — integration de la suite
+
+## Impact
+
+- **Securite** : echappement HTML systematique ; aucune surface fonctionnelle
+  nouvelle.
+- **Performances** : negligeable (transformation de quelques chaines par
+  reponse ; aucun appel moteur supplementaire).
+- **Maintenabilite** : gain notable — la presentation est isolee du metier ;
+  ajouter un composant ne touche ni le chatbot ni le moteur (registre extensible).
+- **Robustesse** : planificateur total, verifie sur 25 reponses reelles et des
+  entrees degenerees.
+- **Gouvernance** : sans objet.
+- **Experience utilisateur** : gain majeur — chaque reponse recoit la mise en
+  forme la plus adaptee (carte de decision, KPI chiffres, conditions cochees,
+  liste titree, pastilles), aeree et conforme a la charte bancaire, sans pave de
+  texte.
+
+## Compatibilite
+
+- **Aucune modification de la logique metier** : `chatbot.expert` et
+  `core.engine` sont inchanges. Le planificateur consomme la sortie existante du
+  chatbot.
+- **Memes reponses** : les textes metier sont preserves integralement (verifie :
+  « OU logique » dans l'encadre MMM/VRD, seuils TRE 2,5 mD conserves dans la
+  liste). Les valeurs affichees (segment, sous-segment, regle) sont
+  rigoureusement celles du moteur (verifie par comparaison directe).
+- Empreinte des 715 008 profils **inchangee** : `19789b84...54e8`.
+
+## Bonnes pratiques utilisees
+
+- **Separation stricte logique / presentation** (Clean Architecture) : la
+  presentation depend du metier, jamais l'inverse.
+- **Fonction pure pour la decision** : testabilite maximale, effets de bord nuls.
+- **Modele de blocs + registre de rendu** : extensible sans modification de
+  l'existant (principe ouvert/ferme).
+- **Reutilisation** des composants et du theme existants plutot que
+  duplication.
+- **Degradation gracieuse** : repli systematique sur un affichage texte.
+- **Defense en profondeur** : echappement HTML.
+
+## Tests effectues
+
+`tests/test_presentation.py` — **28 assertions**, sur le planificateur pur
+alimente par de vraies reponses du chatbot :
+
+- aide a la decision -> carte + KPI + checklist + badges + reference, avec
+  segment/sous-segment/regle **identiques au moteur** et montants formates ;
+- decision en echec -> alerte, pas de carte verte ;
+- reponse TRE -> liste structuree (Premium, Potentiel moyen...), seuils reels
+  (2,5 mD) conserves ;
+- reponse a un seul point -> encadre simple, **sans** liste artificielle ;
+- liste de professions -> pastilles ;
+- absence d'information -> encadre, message preserve ;
+- **totalite** : 25 reponses reelles + entrees degenerees, jamais vide, jamais
+  d'exception.
+
+**Verification visuelle en conditions reelles** (navigateur pilote, connexion
+admin, page Chatbot) :
+
+- « Marche = PART Profession = Ingenieurs Age = 45 MMM = 5000 VRD = 550000 » ->
+  carte « Haut de Gamme / Fortunes », badges « Marche PART / Ingenieurs », KPI
+  « 5 000 DT » et « 550 000 DT » (separateurs insecables), checklist
+  « Conditions verifiees : VRD=550000 OK => MATCH », reference ;
+- « Quels sont les seuils TRE ? » -> liste titree a quatre elements avec les
+  seuils corrects. Aucune erreur console.
+
+L'ensemble des 10 suites (275 assertions) passe, et la non-regression des
+715 008 profils est maintenue.
+
+## Resultat
+
+Le chatbot dispose desormais d'un moteur de rendu qui choisit AUTOMATIQUEMENT le
+composant le plus adapte a chaque reponse — carte de decision, indicateurs
+chiffres, conditions cochees, liste titree, pastilles ou encadre — dans une mise
+en forme aeree et conforme a l'identite bancaire. La logique metier, les regles
+et les reponses restent strictement inchangees : seule la maniere de les
+presenter a evolue, exactement comme demande.
 ---
 
 *Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les

@@ -28,6 +28,7 @@ import test_gouvernance
 import test_import
 import test_ml
 import test_moteur
+import test_presentation
 
 SUITES = [
     ("Moteur de segmentation (non-regression metier)", test_moteur.run),
@@ -39,6 +40,7 @@ SUITES = [
     ("Module Machine Learning", test_ml.run),
     ("Chatbot expert metier", test_chatbot.run),
     ("Import de fichiers (CSV / Excel multi-feuilles)", test_import.run),
+    ("Smart Response Renderer (presentation)", test_presentation.run),
 ]
 
 
