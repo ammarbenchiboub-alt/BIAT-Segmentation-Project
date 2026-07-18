@@ -20,6 +20,40 @@ VALEURS_RESIDENCE = ["Oui", "Non"]
 VALEURS_NATIONALITE = ["Tunisienne", "Autre"]
 VALEURS_OUI_NON = ["Oui", "Non"]
 
+# Colonnes obligatoires : leur presence sert a IDENTIFIER, dans un classeur
+# Excel multi-feuilles, celle qui contient reellement les donnees a segmenter
+# (voir selectionner_feuille).
+COLONNES_OBLIGATOIRES = ["Marche", "Age", "MMM", "VRD"]
+
+
+def selectionner_feuille(feuilles: dict) -> "object":
+    """Choisit, parmi les feuilles d'un classeur Excel, celle qui contient les
+    donnees a segmenter.
+
+    Un classeur peut comporter plusieurs feuilles (notice, donnees, listes de
+    reference...). pandas.read_excel ne lit par defaut que la PREMIERE, ce qui
+    echouait des que la feuille de donnees n'etait pas en tete :
+
+      - le modele genere par l'application place 'Import' en premier -> OK ;
+      - le fichier de test livre place 'Notice' (du texte) en premier -> toutes
+        les lignes etaient jugees invalides ("colonne Marche absente"), car les
+        colonnes attendues se trouvaient dans une AUTRE feuille.
+
+    On retient donc la premiere feuille contenant l'ensemble des colonnes
+    obligatoires. A defaut (fichier a une seule feuille de donnees, ou format
+    inattendu), on retombe sur la premiere feuille : le comportement d'origine
+    est ainsi strictement preserve pour les fichiers qui fonctionnaient deja.
+
+    Parametre : `feuilles` = dictionnaire {nom_feuille: DataFrame} tel que
+    renvoye par pandas.read_excel(..., sheet_name=None).
+    """
+    obligatoires = set(COLONNES_OBLIGATOIRES)
+    for df in feuilles.values():
+        if obligatoires.issubset(set(df.columns)):
+            return df
+    # Aucune feuille ne correspond : on preserve le comportement historique.
+    return next(iter(feuilles.values()))
+
 
 def _est_nombre(valeur: Any) -> bool:
     try:

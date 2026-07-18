@@ -21,7 +21,7 @@ from chatbot import ChatbotExpert
 from assistant import AssistantIA
 from segmentation import segmenter_dataframe
 from templates import generer_template_excel
-from validation import VALEURS_MARCHE, VALEURS_RESIDENCE, VALEURS_NATIONALITE
+from validation import VALEURS_MARCHE, VALEURS_RESIDENCE, VALEURS_NATIONALITE, selectionner_feuille
 from dashboard import calculer_kpis, repartition, calculer_kpis_ml, repartition_scores_confiance
 from ui import (
     injecter_css, entete_biat, carte_segment, section, kpi, legende_segments, COULEURS,
@@ -380,10 +380,22 @@ elif page == "Import CSV":
 
     section("2. Importer un fichier")
     fichier = st.file_uploader("Fichier CSV ou Excel a segmenter", type=["csv", "xlsx"])
+    st.caption(
+        "Glissez-deposez un fichier CSV ou Excel (.xlsx), ou cliquez sur « Browse files ». "
+        "Taille maximale : 200 Mo. Pour un fichier Excel a plusieurs feuilles, celle qui "
+        "contient les colonnes attendues (Marche, Age, MMM, VRD...) est detectee automatiquement."
+    )
 
     if fichier is not None:
         try:
-            df_in = pd.read_excel(fichier) if fichier.name.lower().endswith(".xlsx") else pd.read_csv(fichier)
+            if fichier.name.lower().endswith(".xlsx"):
+                # sheet_name=None : lit TOUTES les feuilles, puis on retient
+                # celle qui contient les colonnes a segmenter (une feuille de
+                # notice ou de listes de reference peut preceder les donnees).
+                feuilles = pd.read_excel(fichier, sheet_name=None)
+                df_in = selectionner_feuille(feuilles)
+            else:
+                df_in = pd.read_csv(fichier)
         except Exception as exc:  # noqa: BLE001
             st.error(f"Lecture impossible : {exc}")
             df_in = None

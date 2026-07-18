@@ -1,0 +1,25 @@
+# Configuration Streamlit de l'application BIAT.
+#
+# Ce fichier est VERSIONNE (contrairement a .streamlit/secrets.toml, exclu par
+# .gitignore) : il ne contient aucun secret, uniquement de la presentation.
+
+[client]
+# Masque la barre d'outils de developpement (bouton « Deploy », menu
+# hamburger « Rerun / Clear cache / Settings »...). Ces controles s'adressent
+# au developpeur, jamais au conseiller bancaire : les afficher en demonstration
+# ou en production est peu professionnel et expose des actions techniques a un
+# utilisateur final. "minimal" ne conserve que le strict necessaire.
+toolbarMode = "minimal"
+
+# N'affiche pas les traces d'erreur Python (stack traces) dans le navigateur :
+# en contexte bancaire, un message technique brut cote client est a la fois
+# inesthetique et une fuite d'information potentielle. Les erreurs restent
+# visibles cote serveur (terminal / journaux).
+showErrorDetails = false
+
+[theme]
+# Couleur d'accent alignee sur l'identite visuelle BIAT (bleu officiel, voir
+# ui/styles.py : BLEU = #00508F), pour que les widgets natifs Streamlit
+# (curseurs, cases, liens) s'accordent au theme de l'application au lieu du
+# rouge Streamlit par defaut.
+primaryColor = "#00508F"

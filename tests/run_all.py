@@ -25,6 +25,7 @@ import test_cache
 import test_chatbot
 import test_concurrence
 import test_gouvernance
+import test_import
 import test_ml
 import test_moteur
 
@@ -37,6 +38,7 @@ SUITES = [
     ("Concurrence & performance", test_concurrence.run),
     ("Module Machine Learning", test_ml.run),
     ("Chatbot expert metier", test_chatbot.run),
+    ("Import de fichiers (CSV / Excel multi-feuilles)", test_import.run),
 ]
 
 

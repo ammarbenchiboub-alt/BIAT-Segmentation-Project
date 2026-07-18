@@ -62,6 +62,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 12 | Coherence entre le modele ML livre et la version figee | Reproductibilite |
 | 13 | Factorisation du socle d'acces aux donnees (DRY) | Architecture |
 | 14 | Fiabilisation du chatbot expert : recherche et source unique | Correction / Gouvernance |
+| 15 | Import Excel multi-feuilles et finition de l'interface | Correction / UX |
 
 ---
 ---
@@ -1852,6 +1853,200 @@ faux, presents depuis la correction du 2026-07-07, ont ete elimines — non par
 une correction ponctuelle, mais en supprimant la duplication qui les avait
 rendus possibles.
 
+---
+---
+
+# Note 15 — Import Excel multi-feuilles et finition de l'interface
+
+> **Origine** : deux captures d'ecran de la page « Import CSV » fournies par
+> l'utilisateur, montrant un import du fichier de test livre qui produisait
+> **0 ligne segmentee et 18 lignes invalides**.
+
+## Probleme identifie
+
+L'import du fichier `Jeu_de_test_segmentation_BIAT.xlsx` (livre avec le projet)
+echouait integralement : les 18 lignes lues etaient toutes declarees invalides,
+avec l'erreur « Marche manquant ; Age manquant ; MMM manquant ; VRD manquant ;
+Colonne obligatoire absente : Marche ». L'apercu du fichier affichait du texte
+(« FICHIER DE TEST - Segmentation BIAT », « But : ... », « Onglet
+'Test_Import' : ») au lieu des donnees.
+
+Trois observations complementaires, de gravite decroissante, ont ete relevees
+sur les memes captures :
+
+| # | Constat | Nature |
+|---|---|---|
+| 1 | Import du fichier de test : 0 segmentee / 18 invalides | Fonctionnel (bloquant) |
+| 2 | Barre « Deploy » et menu developpeur visibles | Presentation |
+| 3 | Uploader partiellement en anglais (« Drag and drop file here », « Browse files », « Limit 200MB per file ») | Coherence linguistique |
+
+## Analyse
+
+### Defaut 1 — Mauvaise feuille lue (bloquant)
+
+Le classeur `Jeu_de_test_segmentation_BIAT.xlsx` comporte **trois feuilles** :
+`Notice` (texte explicatif), `Test_Import` (les 33 cas de test) et `Listes`
+(valeurs de reference). Les donnees a segmenter sont dans `Test_Import`.
+
+Or l'import s'ecrivait `pd.read_excel(fichier)`, qui ne lit que la **premiere
+feuille** du classeur. Ici la premiere feuille est `Notice` : ses cellules de
+texte etaient interpretees comme des colonnes, aucune ne correspondait aux
+champs attendus, et la validation rejetait donc **la totalite** des lignes.
+
+L'asymetrie qui rendait le defaut trompeur : le **modele Excel genere par
+l'application** place sa feuille de donnees (`Import`) en **premier**. Le
+modele s'importait donc correctement, tandis que le fichier de test — pourtant
+livre avec le projet et destine precisement a la demonstration — echouait. Un
+test manuel du seul modele n'aurait jamais revele le probleme.
+
+**Risque** : la fonctionnalite d'import de masse, l'une des quatre
+fonctionnalites majeures de l'application, apparaissait **entierement cassee**
+lors d'une demonstration avec le jeu de donnees fourni. En soutenance, cela
+invalidait la demonstration de tout un pan du projet.
+
+### Defaut 2 — Barre d'outils developpeur visible
+
+Le bouton « Deploy » et le menu hamburger de Streamlit (Rerun, Clear cache,
+Settings...) s'affichaient. Ces controles s'adressent au **developpeur**, non
+au conseiller bancaire : les exposer a l'utilisateur final est peu
+professionnel et donne acces a des actions techniques hors de son perimetre.
+
+### Defaut 3 — Textes anglais residuels
+
+Le composant `st.file_uploader` de Streamlit affiche des libelles internes en
+anglais (« Drag and drop file here », « Browse files », « Limit 200MB per
+file »). Ces chaines ne sont **pas exposees par l'API** de Streamlit : le
+parametre `label` ne controle que l'intitule au-dessus du composant, deja en
+francais. Une application bancaire destinee a un public francophone ne devrait
+pas melanger les langues sur un ecran.
+
+## Solution retenue
+
+### Defaut 1 — Selection de la feuille par ses colonnes
+
+Fonction `selectionner_feuille()` dans `validation/csv_validator.py` : parmi
+toutes les feuilles du classeur (lues via `pd.read_excel(..., sheet_name=None)`),
+elle retient la premiere contenant l'ensemble des colonnes obligatoires
+(`Marche`, `Age`, `MMM`, `VRD`). A defaut, elle retombe sur la premiere feuille,
+ce qui **preserve strictement** le comportement anterieur pour les fichiers a
+feuille unique qui fonctionnaient deja.
+
+### Defaut 2 — Configuration Streamlit
+
+Fichier `.streamlit/config.toml` (versionne, sans secret) : `toolbarMode =
+"minimal"` masque la barre developpeur ; `showErrorDetails = false` evite
+l'affichage de traces Python cote client ; `primaryColor = "#00508F"` aligne
+l'accent des widgets natifs sur le bleu BIAT officiel.
+
+### Defaut 3 — Legende francaise explicite
+
+Le contournement par injection de CSS/JS pour reecrire les libelles internes de
+Streamlit a ete **ecarte** : fragile, dependant de la structure interne du
+composant, il casserait a la premiere mise a jour de Streamlit. A la place, une
+`st.caption` en francais, placee sous l'uploader, explicite le fonctionnement
+(« Glissez-deposez un fichier CSV ou Excel, ou cliquez sur "Browse files".
+Taille maximale : 200 Mo. »). Le melange de langues residuel est ainsi
+compense par une consigne claire, sans dependance fragile.
+
+## Justification technique
+
+**Pourquoi identifier la feuille par ses colonnes plutot que par son nom ?**
+Se fier a un nom (`Test_Import`, `Import`, `Data`...) supposerait une convention
+que rien ne garantit d'un fichier a l'autre. Les **colonnes obligatoires**, en
+revanche, sont une propriete intrinseque des donnees a segmenter : leur presence
+est le seul critere fiable et universel. C'est aussi ce que la validation
+verifie deja par ailleurs — le critere est donc coherent avec le reste du code.
+
+**Pourquoi un repli sur la premiere feuille ?**
+Pour garantir la non-regression : tout fichier qui s'important correctement
+avant (feuille de donnees en tete, ou fichier CSV) se comporte exactement de la
+meme facon. La correction ne peut qu'ELARGIR l'ensemble des fichiers acceptes,
+jamais en retirer.
+
+**Pourquoi ne pas corriger le fichier de test plutot que le code ?**
+Reordonner les feuilles du fichier de test aurait masque le defaut sans le
+corriger : n'importe quel fichier reel produit par un metier (avec une notice
+ou des feuilles annexes) aurait rencontre le meme echec. Le defaut est dans la
+lecture, c'est donc la lecture qu'il faut corriger. Cette robustesse profite a
+tous les fichiers futurs, pas seulement au fichier de test.
+
+**Pourquoi placer la configuration dans un fichier versionne ?**
+`.streamlit/config.toml` ne contient aucune donnee sensible (seulement de la
+presentation). Le versionner garantit que la demonstration se comporte de facon
+identique sur n'importe quel poste, sans reglage manuel. Le fichier de secrets
+(`.streamlit/secrets.toml`) reste, lui, exclu par `.gitignore`.
+
+## Fichiers modifies
+
+- `validation/csv_validator.py` — `selectionner_feuille`, `COLONNES_OBLIGATOIRES`
+- `validation/__init__.py` — exposition
+- `app.py` — lecture de toutes les feuilles + selection, legende francaise
+- `.streamlit/config.toml` (creation) — toolbar, erreurs, couleur d'accent
+- `tests/test_import.py` (creation)
+- `tests/run_all.py` — integration de la suite
+
+## Impact
+
+- **Securite** : `showErrorDetails = false` evite la fuite de traces techniques
+  cote client.
+- **Performances** : lire toutes les feuilles d'un petit classeur est
+  imperceptible ; les fichiers vises font quelques kilo-octets.
+- **Maintenabilite** : la logique de selection est isolee et testee ; le critere
+  (colonnes obligatoires) est partage avec la validation.
+- **Robustesse** : gain principal — l'import accepte desormais les classeurs
+  multi-feuilles quel que soit l'ordre des feuilles.
+- **Gouvernance** : sans objet direct.
+- **Experience utilisateur** : gain majeur — l'import fonctionne avec le fichier
+  livre ; l'interface ne montre plus de controles techniques ; la consigne
+  d'upload est en francais.
+
+## Compatibilite
+
+- **Aucune modification du moteur** ni des regles. La selection de feuille
+  precede la segmentation et ne fait que designer les donnees a lui transmettre.
+- **Non-regression stricte** : le repli sur la premiere feuille preserve le
+  comportement anterieur des fichiers qui fonctionnaient (modele genere, CSV).
+- Empreinte des 715 008 profils **inchangee** : `19789b84...54e8`.
+
+## Bonnes pratiques utilisees
+
+- **Robustesse aux entrees** (*defensive programming*) : accepter une plus large
+  variete de fichiers valides sans casser les cas existants.
+- **Identification par la structure des donnees**, non par une convention de
+  nommage fragile.
+- **Separation des responsabilites** : la selection de feuille appartient a la
+  couche validation, pas au script d'interface.
+- **Configuration versionnee, secrets exclus**.
+- **Refus d'un contournement fragile** (injection CSS) au profit d'une solution
+  stable (legende explicite).
+
+## Tests effectues
+
+`tests/test_import.py` — **12 assertions**, dont le scenario exact de
+l'utilisateur, sur le **vrai fichier livre** :
+
+- selection de la bonne feuille quel que soit son rang (notice en tete, donnees
+  en tete) ;
+- repli sur la premiere feuille pour un classeur mono-feuille ou non conforme,
+  sans exception ;
+- le fichier `Jeu_de_test_segmentation_BIAT.xlsx` produit desormais **30 lignes
+  segmentees** (contre 0 avant) ;
+- les 3 seules lignes invalides sont les **cas-limites voulus** du fichier de
+  test (marche TPME non gere, age negatif, MMM manquant) : leur rejet est
+  correct ;
+- les segments produits appartiennent tous a la nomenclature de la note.
+
+Verification complementaire : l'application demarre sans erreur, la barre
+« Deploy » n'est plus affichee, et la non-regression des 715 008 profils est
+maintenue.
+
+## Resultat
+
+L'import de masse fonctionne avec le fichier de test livre (30 cas segmentes,
+3 cas-limites correctement rejetes) et, plus generalement, avec tout classeur
+Excel multi-feuilles. L'interface ne presente plus de controles techniques a
+l'utilisateur final et affiche une consigne d'upload en francais. La
+fonctionnalite est prete pour une demonstration.
 ---
 
 *Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les
