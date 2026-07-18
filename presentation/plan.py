@@ -297,27 +297,53 @@ def _planifier_decision(rep: dict) -> list[Bloc]:
     return blocs
 
 
-def _planifier_connaissance(rep: dict) -> list[Bloc]:
-    """Reponse issue de la base de connaissances (texte). On choisit :
-      - une liste structuree si la reponse enumere plusieurs elements (' ; ') ;
-      - des pastilles si elle se termine par une enumeration (professions) ;
-      - sinon un encadre de reference simple et lisible.
+def _planifier_paragraphe(paragraphe: str, enumerations_vues: set) -> list[Bloc]:
+    """Choisit le composant d'UN paragraphe de reponse :
+      - liste structuree s'il enumere plusieurs elements (' ; ') ;
+      - pastilles s'il se termine par une enumeration (professions...) ;
+      - sinon un encadre de reference simple.
+
+    `enumerations_vues` permet d'eviter d'afficher deux fois la meme
+    enumeration : le chatbot peut renvoyer deux entrees de connaissance qui
+    citent la meme liste (ex. deux definitions des professions liberales). On
+    saute alors le paragraphe redondant plutot que de repeter les pastilles.
     """
+    liste = _detecter_liste(paragraphe)
+    if liste is not None:
+        titre, items = liste
+        return [ListeStructuree(items, titre)]
+
+    enumeration = _detecter_enumeration(paragraphe)
+    if enumeration is not None:
+        intro, items = enumeration
+        cle = tuple(items)
+        if cle in enumerations_vues:
+            return []  # enumeration deja affichee -> on ne la repete pas
+        enumerations_vues.add(cle)
+        return [Callout(intro + " :", ton="info", icone="📘"), Badges(items, ton="bleu")]
+
+    return [Callout(paragraphe, ton="info", icone="📘")]
+
+
+def _planifier_connaissance(rep: dict) -> list[Bloc]:
+    """Reponse issue de la base de connaissances (texte). Chaque paragraphe
+    (separe par une ligne vide) est mis en forme independamment, ce qui evite
+    qu'une reponse composee de plusieurs entrees soit traitee en bloc et
+    produise un encadre demesure."""
     texte = rep.get("reponse", "")
     source = rep.get("source")
 
-    liste = _detecter_liste(texte)
-    if liste is not None:
-        titre, items = liste
-        blocs: list[Bloc] = [ListeStructuree(items, titre)]
-    else:
-        enumeration = _detecter_enumeration(texte)
-        if enumeration is not None:
-            intro, items = enumeration
-            blocs = [Callout(intro + " :", ton="info", icone="📘"), Badges(items, ton="bleu")]
-        else:
-            blocs = [Callout(texte, ton="info", icone="📘")]
+    paragraphes = [p.strip() for p in texte.split("\n\n") if p.strip()]
+    if not paragraphes:
+        paragraphes = [texte]
 
+    blocs: list[Bloc] = []
+    enumerations_vues: set = set()
+    for paragraphe in paragraphes:
+        blocs.extend(_planifier_paragraphe(paragraphe, enumerations_vues))
+
+    if not blocs:  # securite : jamais de reponse vide
+        blocs = [Callout(texte, ton="info", icone="📘")]
     if source:
         blocs.append(Reference(source))
     return blocs

@@ -2240,6 +2240,40 @@ admin, page Chatbot) :
 L'ensemble des 10 suites (275 assertions) passe, et la non-regression des
 715 008 profils est maintenue.
 
+### Addendum — verification visuelle en direct et correctif
+
+Apres livraison, les quatre types de composants ont ete verifies un a un dans
+l'application reelle (navigateur pilote, connexion admin, page Chatbot) :
+
+  - aide a la decision -> carte + badges + KPI + checklist + reference : conforme ;
+  - reponse TRE        -> liste structuree titree (seuils reels 2,5 mD) : conforme ;
+  - logique MMM/VRD    -> encadre simple : conforme ;
+  - professions liberales -> pastilles.
+
+Le test en direct des professions a revele un DEFAUT non couvert par les tests
+automatiques : la question « professions liberales » declenche deux entrees de
+la base de connaissances (deux cles distinctes correspondent, cf. Note 14),
+renvoyees concatenees. La detection d'enumeration, appliquee au texte global,
+produisait alors un encadre introductif demesure et un DOUBLON de pastilles.
+
+Correctif : le planificateur traite desormais la reponse PARAGRAPHE PAR
+PARAGRAPHE (separes par une ligne vide) et deduplique une enumeration deja
+affichee (`_planifier_paragraphe`). Chaque entree recoit ainsi la mise en forme
+adaptee, sans repetition. Verifie en direct : un seul groupe de pastilles.
+
+Limite mineure assumee : une profession de l'annexe 5 dont le libelle contient
+lui-meme des virgules (« Huissiers de justice, notaires, experts judiciaires et
+assimiles ») est scindee en plusieurs pastilles. La detection d'enumeration
+travaillant sur du texte, la frontiere exacte des elements est indissociable
+d'un separateur ambigu. L'affichage reste lisible et complet ; une fidelite
+parfaite exigerait de coupler le planificateur a la liste structuree du moteur,
+ce qui romprait la separation presentation / metier volontairement maintenue.
+Compromis retenu : sobriete et decouplage plutot que robustesse marginale.
+
+Cet episode illustre la valeur de la verification en conditions reelles : un
+defaut invisible aux tests unitaires (car lie a la concatenation de deux
+entrees par le chatbot) n'apparait qu'a l'usage.
+
 ## Resultat
 
 Le chatbot dispose desormais d'un moteur de rendu qui choisit AUTOMATIQUEMENT le
