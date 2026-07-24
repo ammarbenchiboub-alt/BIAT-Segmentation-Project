@@ -46,10 +46,13 @@ _TONS = {
 
 
 def injecter_css_rendu() -> None:
-    """Injecte (une fois par page) le style des composants du moteur de rendu."""
-    if st.session_state.get("_css_rendu_injecte"):
-        return
-    st.session_state["_css_rendu_injecte"] = True
+    """Injecte le style des composants du moteur de rendu.
+
+    Volontairement SANS memorisation en session : Streamlit reconstruit
+    entierement la page a chaque rerun, donc un verrou de session empecherait
+    le style d'etre present sur les pages ou il n'a pas ete injecte en premier
+    (les encadres y apparaitraient sans mise en forme). Reinjecter une feuille
+    de style identique est sans effet visible ni cout mesurable."""
     st.markdown(
         """
 <style>

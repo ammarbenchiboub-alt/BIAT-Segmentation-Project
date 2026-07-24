@@ -28,7 +28,10 @@ from ui import (
     masthead, sidebar_brand,
 )
 from core.ml_anomaly import analyser_anomalie, analyser_dataframe, infos_modele, reentrainer_modele
-from presentation import afficher_reponse
+from presentation import afficher_reponse, generer_fiche_html, injecter_css_rendu
+from explicabilite import ecarts_atteignables, parcours_decision
+import referentiel as ref
+from commun import en_dinars
 from auth import authentifier
 from audit import enregistrer as enregistrer_audit, enregistrer_lot as enregistrer_audit_lot
 from audit import lister as lister_audit, compter as compter_audit, verifier_integrite as verifier_integrite_audit
@@ -43,6 +46,10 @@ from gouvernance import (
 
 st.set_page_config(page_title="BIAT - Segmentation client", page_icon="🏦", layout="wide")
 injecter_css()
+# Style des composants du moteur de rendu (encadres, checklists, pastilles) :
+# injecte globalement car ils sont utilises sur plusieurs pages (chatbot,
+# simulation individuelle), et non plus seulement dans le chatbot.
+injecter_css_rendu()
 
 
 # --------------------------------------------------------------------------- #
@@ -147,11 +154,11 @@ def ajouter_historique(lignes: list[dict]) -> None:
 _ROLE = st.session_state.auth["role"]
 
 _PAGES = ["Accueil", "Simulation individuelle", "Import CSV",
-          "Chatbot Expert", "Tableau de bord", "Parametrage"]
+          "Chatbot Expert", "Tableau de bord", "Referentiel", "Parametrage"]
 _ICONES_PAGES = {
     "Accueil": "🏠", "Simulation individuelle": "🧮", "Import CSV": "📂",
-    "Chatbot Expert": "💬", "Tableau de bord": "📊", "Parametrage": "⚙️",
-    "Journal d'audit": "🛡️",
+    "Chatbot Expert": "💬", "Tableau de bord": "📊", "Referentiel": "📚",
+    "Parametrage": "⚙️", "Journal d'audit": "🛡️",
 }
 if _ROLE != "admin":
     # Parametrage des seuils reserve au role admin (modification des regles
@@ -356,6 +363,77 @@ elif page == "Simulation individuelle":
             "Modele Isolation Forest (scikit-learn), entraine sur des profils simules a partir des "
             "paliers de la note. Analyse statistique complementaire : ne modifie jamais le segment "
             "calcule par le moteur metier."
+        )
+
+        # ------------------------------------------------------------------ #
+        # Explicabilite : pourquoi ce segment, et que faudrait-il pour changer
+        # ------------------------------------------------------------------ #
+        # Aucune reevaluation ici : le parcours est LU dans la trace du moteur,
+        # et chaque ecart est VERIFIE en resoumettant un profil modifie au
+        # moteur (cf. paquet explicabilite). Le moteur reste seul decideur.
+        _etapes = parcours_decision(moteur, res)
+        _ecarts = ecarts_atteignables(moteur, res)
+
+        st.markdown("")
+        section("Explication de la decision")
+        col_parcours, col_ecarts = st.columns([1.15, 1])
+
+        with col_parcours:
+            st.caption(
+                "Regles du marche evaluees par ordre de priorite. Le moteur retient "
+                "la **premiere** regle satisfaite."
+            )
+            st.dataframe(
+                pd.DataFrame([
+                    {"Priorite": e.priorite,
+                     "Segment vise": f"{e.segment} / {e.sous_segment}",
+                     "Statut": e.libelle_statut,
+                     "Regle": e.regle_id}
+                    for e in _etapes
+                ]),
+                use_container_width=True, hide_index=True,
+            )
+
+        with col_ecarts:
+            if _ecarts:
+                st.caption(
+                    "Montants a atteindre pour changer de segment. Chaque ligne est "
+                    "**verifiee par le moteur** (profil modifie resoumis)."
+                )
+                for _ec in _ecarts:
+                    st.markdown(
+                        f"<div class='smart-callout' style='border-color:#1E73B8;"
+                        f"border-left-color:#1E73B8;background:#EEF5FC;'>"
+                        f"<span class='ic'>📈</span><span>"
+                        f"<b>+ {en_dinars(_ec.delta)} DT</b> de {_ec.variable} "
+                        f"(seuil {en_dinars(_ec.seuil)} DT)<br>"
+                        f"→ <b>{_ec.segment}</b> / {_ec.sous_segment}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.info(
+                    "Aucun changement de segment atteignable par une hausse de MMM "
+                    "ou de VRD pour ce profil."
+                )
+
+        # ------------------------------------------------------------------ #
+        # Fiche de decision exportable (justificatif archivable)
+        # ------------------------------------------------------------------ #
+        section("Justificatif")
+        st.download_button(
+            "📄 Telecharger la fiche de decision (HTML imprimable)",
+            data=generer_fiche_html(
+                res,
+                utilisateur=st.session_state.auth,
+                version_regles=_EMPREINTE_REGLES,
+                etapes=_etapes,
+                ecarts=_ecarts,
+            ).encode("utf-8"),
+            file_name=f"fiche_decision_{res.regle_id or 'non_segmente'}.html",
+            mime="text/html",
+            help="Document autonome : ouvrez-le puis imprimez-le en PDF depuis "
+                 "votre navigateur (Ctrl+P). Il porte l'empreinte de la version "
+                 "des regles utilisee, ce qui rend la decision rejouable.",
         )
 
         ajouter_historique([{**profil, "Segment": res.segment or "-",
@@ -589,6 +667,81 @@ elif page == "Tableau de bord":
             if st.button("Vider l'historique"):
                 st.session_state.historique = pd.DataFrame()
                 st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Referentiel (documentation interactive, lecture seule, tous les roles)
+# --------------------------------------------------------------------------- #
+elif page == "Referentiel":
+    entete_biat("Referentiel BIAT", "Regles de segmentation en vigueur — consultation")
+    st.caption(
+        "Cette page est **generee depuis la source unique** "
+        "(`config/regles_segmentation.json`) : aucune valeur n'y est saisie en dur. "
+        "Toute modification validee en Parametrage (double validation) s'y reflete "
+        "immediatement. Consultation seule : aucune modification n'est possible ici."
+    )
+
+    _meta = ref.metadonnees(moteur)
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        kpi("Marches geres", len(ref.marches(moteur)), "PART, PRO, TRE, ENR", icone="🏦")
+    with c2:
+        kpi("Regles du referentiel", ref.compter_regles(moteur), "toutes marches", icone="📐")
+    with c3:
+        kpi("Version des regles", _EMPREINTE_REGLES, "empreinte du fichier", icone="🔖")
+
+    _onglets = st.tabs(["Seuils par marche", "Professions (annexes)", "Glossaire",
+                        "Source & perimetre", "Points de vigilance"])
+
+    with _onglets[0]:
+        for _code, _libelle in ref.marches(moteur):
+            section(f"{_code} — {_libelle}")
+            st.dataframe(pd.DataFrame(ref.table_regles(moteur, _code)),
+                         use_container_width=True, hide_index=True)
+        st.caption(
+            "Lecture : le moteur evalue les regles par priorite croissante et retient "
+            "la **premiere** satisfaite. La condition entre MMM et VRD est un **OU** "
+            "logique, jamais un ET."
+        )
+
+    with _onglets[1]:
+        _listes = ref.listes_professions(moteur)
+        _nom_liste = st.selectbox("Liste de professions", list(_listes.keys()))
+        st.caption(f"{len(_listes[_nom_liste])} profession(s) dans cette liste.")
+        st.markdown(
+            "<div class='smart-chips'>"
+            + "".join(f"<span class='smart-chip bleu'>{p}</span>" for p in _listes[_nom_liste])
+            + "</div>",
+            unsafe_allow_html=True,
+        )
+
+    with _onglets[2]:
+        section("Glossaire metier")
+        st.dataframe(
+            pd.DataFrame(ref.GLOSSAIRE, columns=["Terme", "Definition"]),
+            use_container_width=True, hide_index=True,
+        )
+
+    with _onglets[3]:
+        section("Source et perimetre")
+        st.dataframe(
+            pd.DataFrame(_meta, columns=["Element", "Valeur"]),
+            use_container_width=True, hide_index=True,
+        )
+
+    with _onglets[4]:
+        section("Points de vigilance et choix d'interpretation")
+        st.caption(
+            "Ambiguites relevees lors de la lecture de la note officielle et arbitrages "
+            "retenus. Les exposer releve de la transparence methodologique : ils "
+            "documentent ce qui a ete interprete, et ce qui reste a confirmer."
+        )
+        _points = ref.points_de_vigilance(moteur)
+        if not _points:
+            st.info("Aucun point de vigilance consigne.")
+        for _titre, _texte in _points:
+            with st.expander(_titre.capitalize()):
+                st.write(_texte)
 
 
 # --------------------------------------------------------------------------- #

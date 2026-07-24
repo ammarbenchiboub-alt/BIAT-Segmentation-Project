@@ -25,10 +25,12 @@ import test_cache
 import test_chatbot
 import test_concurrence
 import test_gouvernance
+import test_explicabilite
 import test_import
 import test_ml
 import test_moteur
 import test_presentation
+import test_referentiel
 
 SUITES = [
     ("Moteur de segmentation (non-regression metier)", test_moteur.run),
@@ -41,6 +43,8 @@ SUITES = [
     ("Chatbot expert metier", test_chatbot.run),
     ("Import de fichiers (CSV / Excel multi-feuilles)", test_import.run),
     ("Smart Response Renderer (presentation)", test_presentation.run),
+    ("Explicabilite & fiche de decision", test_explicabilite.run),
+    ("Referentiel BIAT (source unique)", test_referentiel.run),
 ]
 
 

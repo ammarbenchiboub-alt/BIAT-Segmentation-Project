@@ -6,5 +6,6 @@ de seuil, ni de notion de segment. Il est importable par n'importe quelle
 couche sans creer de dependance vers le metier.
 """
 from .base_sqlite import connexion_durable
+from .formatage import en_dinars, en_mD
 
-__all__ = ["connexion_durable"]
+__all__ = ["connexion_durable", "en_mD", "en_dinars"]

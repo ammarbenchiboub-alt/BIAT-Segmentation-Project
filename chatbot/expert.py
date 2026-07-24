@@ -16,6 +16,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
+from commun import en_mD
 from core import MoteurSegmentation
 
 MESSAGE_ABSENT = "La reponse n'est pas disponible dans le document metier."
@@ -94,7 +95,9 @@ class ChatbotExpert:
         valeur = bornes.get(borne)
         if valeur is None:  # pragma: no cover - garde-fou
             return "?"
-        return f"{valeur / 1000:g} mD"
+        # Conversion DT -> mD centralisee dans commun.formatage : une seule
+        # definition partagee avec le referentiel et la fiche de decision.
+        return en_mD(valeur)
 
     def _plage(self, regle_id: str, champ: str) -> str:
         """Formate un intervalle sous la forme '25-50 mD' (et non

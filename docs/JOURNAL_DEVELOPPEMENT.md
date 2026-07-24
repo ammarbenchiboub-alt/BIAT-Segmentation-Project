@@ -64,6 +64,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 14 | Fiabilisation du chatbot expert : recherche et source unique | Correction / Gouvernance |
 | 15 | Import Excel multi-feuilles et finition de l'interface | Correction / UX |
 | 16 | Smart Response Renderer : moteur de rendu intelligent du chatbot | Experience utilisateur / Architecture |
+| 17 | Explicabilite, fiche de decision et referentiel consultable | Explicabilite / Tracabilite / Gouvernance |
 
 ---
 ---
@@ -2282,6 +2283,206 @@ chiffres, conditions cochees, liste titree, pastilles ou encadre — dans une mi
 en forme aeree et conforme a l'identite bancaire. La logique metier, les regles
 et les reponses restent strictement inchangees : seule la maniere de les
 presenter a evolue, exactement comme demande.
+---
+---
+
+# Note 17 — Explicabilite, fiche de decision et referentiel consultable
+
+> **Origine** : phase de valorisation du projet en vue de la soutenance. Trois
+> ameliorations retenues apres analyse comparative (P1, P2, P3), a l'exclusion
+> de tout ajout fonctionnel : aucune regle metier ni aucun element du moteur
+> n'est modifie.
+
+## Probleme identifie
+
+L'application calculait juste, mais ne **rendait pas compte**. Trois manques,
+tous situes du cote de la restitution :
+
+1. **La decision n'etait pas argumentee.** L'utilisateur voyait quelle regle
+   l'emportait, jamais pourquoi les autres avaient ete ecartees, ni ce qui
+   separait le client du segment superieur.
+2. **Rien ne sortait de l'application.** Aucun justificatif archivable par
+   client. Or en controle interne bancaire, une decision qui ne peut etre
+   justifiee par ecrit n'est pas opposable.
+3. **Le referentiel etait invisible.** Les regles n'etaient consultables que
+   via la page Parametrage, reservee au role administrateur et orientee
+   edition. Un conseiller ne disposait d'aucun moyen de verifier un seuil.
+
+## Analyse
+
+Ces trois manques partagent une meme nature : l'information existait deja dans
+le systeme, mais n'etait pas restituee.
+
+- La trace d'evaluation est produite par le moteur a chaque segmentation
+  (`ResultatSegmentation.explications`) et n'etait exploitee que sous forme de
+  liste brute dans un volet repliable.
+- L'empreinte de la version des regles etait deja calculee et journalisee
+  (Note 05), mais restait interne.
+- Le fichier de regles contient l'integralite du referentiel, y compris les
+  points d'ambiguite (`_notes_conflits`), sans aucune surface de consultation.
+
+L'enjeu n'etait donc pas de produire de nouvelles donnees, mais d'exposer
+celles qui existaient — ce qui garantit par construction l'absence d'impact
+fonctionnel.
+
+## Solution retenue
+
+### P1 — Explicabilite (`explicabilite/`)
+
+Deux fonctions, dans un paquet independant de l'interface :
+
+- `parcours_decision()` reconstitue le sort de **chaque** regle du marche :
+  retenue, evaluee-rejetee, ecartee sur critere d'eligibilite, ou non evaluee
+  (posterieure a la regle retenue). Les statuts sont **deduits de la trace du
+  moteur** et de l'ordre de priorite, jamais recalcules.
+- `ecarts_atteignables()` chiffre les hausses de MMM ou de VRD qui feraient
+  changer de segment.
+
+### P2 — Fiche de decision (`presentation/fiche.py`)
+
+Document HTML autonome restituant profil, decision, conditions verifiees,
+parcours d'evaluation, ecarts, agent, horodatage et **empreinte de la version
+des regles**. Genere a la demande depuis la page Simulation individuelle.
+
+### P3 — Referentiel (`referentiel/`)
+
+Page de consultation accessible a **tous les roles** : seuils par marche,
+listes de professions, glossaire, metadonnees de la note et points de
+vigilance — le tout **genere depuis la source unique**.
+
+Une factorisation accompagne ces ajouts : la conversion DT -> mD, jusque-la
+propre au chatbot, est remontee dans `commun/formatage.py` et partagee par le
+chatbot, le referentiel et la fiche. Une seule definition, conformement au
+principe applique en Note 13.
+
+## Justification technique
+
+**Comment garantir que l'explicabilite n'invente aucune decision ?**
+C'est le point d'architecture central. Un module qui deduirait lui-meme
+« avec 1 000 DT de plus, ce client serait Classe Moyenne » constituerait une
+**seconde implementation des regles** — exactement ce que le projet interdit.
+
+La methode retenue evite ce piege : pour chaque seuil non atteint, on construit
+une **copie du profil** portant la variable au seuil, puis **on demande au
+moteur de la segmenter**. Le segment annonce est donc toujours celui que le
+moteur produirait reellement. `explicabilite` ne decide rien : il interroge.
+
+Cette propriete n'est pas seulement affirmee, elle est **testee** : chaque
+ecart produit est re-verifie independamment dans `tests/test_explicabilite.py`
+en resoumettant le profil modifie au moteur.
+
+**Pourquoi une fiche HTML plutot qu'un PDF genere ?**
+Une bibliotheque PDF aurait ajoute une dependance a un `requirements.txt`
+volontairement fige pour la reproductibilite (Note 06). Le format HTML avec
+feuille de style `@media print` permet a l'utilisateur de produire un PDF via
+son navigateur, sans aucune dependance nouvelle. Le document est de surcroit
+**strictement autonome** (verifie : zero ressource externe), donc archivable et
+lisible hors ligne, ce qu'un document dependant du reseau ne serait pas.
+
+**Pourquoi faire figurer l'empreinte des regles sur la fiche ?**
+C'est ce qui rend la decision **rejouable**. Les seuils peuvent evoluer (page
+Parametrage, double validation) ; sans l'empreinte, une fiche archivee serait
+ininterpretable des le premier changement. Avec elle, on sait exactement quel
+jeu de seuils a produit la decision.
+
+**Pourquoi ouvrir le referentiel a tous les roles ?**
+Consulter n'est pas modifier. La page est en lecture seule et ne cree aucune
+surface d'ecriture ; la modification reste soumise a la double validation. En
+revanche, un conseiller qui doit justifier une decision aupres d'un client a
+besoin de verifier un seuil — le lui interdire n'apporte aucune securite.
+
+**Pourquoi exposer les points de vigilance (`_notes_conflits`) ?**
+Par transparence methodologique. Ils documentent ce qui releve d'une
+interpretation de la note et ce qui reste a confirmer. Les masquer donnerait
+l'illusion d'une certitude que le projet n'a pas.
+
+## Fichiers modifies
+
+- `explicabilite/analyse.py`, `explicabilite/__init__.py` (creations)
+- `referentiel/tables.py`, `referentiel/__init__.py` (creations)
+- `presentation/fiche.py` (creation), `presentation/__init__.py`
+- `commun/formatage.py` (creation), `commun/__init__.py`
+- `chatbot/expert.py` — delegue la conversion mD a `commun.formatage`
+- `presentation/rendu.py` — injection CSS rendue globale (composants desormais
+  utilises hors du chatbot)
+- `app.py` — explicabilite et fiche dans la Simulation individuelle, page
+  Referentiel, navigation
+- `tests/test_explicabilite.py`, `tests/test_referentiel.py` (creations)
+- `tests/run_all.py`
+
+## Impact
+
+- **Securite** : echappement HTML systematique dans la fiche ; page Referentiel
+  strictement en lecture seule.
+- **Performances** : `ecarts_atteignables` declenche quelques segmentations
+  supplementaires par simulation (une par seuil candidat), operation en memoire
+  d'un cout imperceptible.
+- **Maintenabilite** : conversion mD factorisee ; modules independants de
+  l'interface, donc testables sans Streamlit.
+- **Robustesse** : parcours et ecarts renvoient une liste vide sur un marche
+  non gere, sans exception.
+- **Gouvernance** : la fiche materialise la tracabilite ; le referentiel rend
+  visible l'effet de la double validation.
+- **Experience utilisateur** : la decision devient comprehensible et
+  justifiable ; le conseiller dispose d'un argumentaire chiffre.
+
+## Compatibilite
+
+- `core/engine.py` et `config/regles_segmentation.json` : **aucune
+  modification**. Verifie par l'historique Git — ces deux fichiers ne portent
+  qu'un seul commit, l'import initial du projet.
+- Empreinte des 715 008 profils **inchangee** : `19789b84...54e8`.
+- Chatbot : sortie strictement identique apres factorisation (50/50 assertions),
+  et synchronisation avec le JSON verifiee sur sept seuils.
+
+## Bonnes pratiques utilisees
+
+- **Interroger plutot que deduire** : l'explicabilite delegue toute decision au
+  moteur, preservant le principe de moteur unique.
+- **Source unique** : le referentiel est un miroir du JSON, verifie par un test
+  qui modifie un seuil et controle sa repercussion immediate.
+- **DRY** : conversion mD definie une seule fois.
+- **Separation des couches** : `explicabilite` et `referentiel` n'importent pas
+  Streamlit ; l'interface les consomme.
+- **Zero dependance ajoutee** : la fiche s'appuie sur l'impression navigateur.
+
+## Tests effectues
+
+Deux suites creees, **116 assertions** :
+
+- `tests/test_explicabilite.py` (86) : le parcours couvre toutes les regles du
+  marche, une seule est retenue, l'ordre de priorite est respecte, aucune regle
+  posterieure n'est evaluee ; **chaque ecart est re-verifie par le moteur**
+  (segment, sous-segment, regle) ; la fiche contient decision, empreinte, agent
+  et note, est autonome (aucune ressource externe) et echappe les donnees
+  saisies.
+- `tests/test_referentiel.py` (30) : conformite au JSON, **test decisif** — un
+  seuil porte a 600 mD apparait immediatement dans le referentiel — formatage
+  en mD, glossaire complet, consultation sans effet de bord.
+
+**Validation complete en conditions reelles** (application lancee, connexion
+admin, navigation manuelle) :
+
+| Verification | Resultat |
+|---|---|
+| Suite complete | **12 suites, 391/391 assertions** |
+| Empreinte moteur (715 008 profils) | **identique a la v1.0** |
+| `core/engine.py` et JSON des regles | **un seul commit : l'import initial** |
+| Chatbot vs JSON (7 seuils) | **synchronise** |
+| Test dynamique (seuil a 777 mD) | chatbot, referentiel et moteur **coherents** |
+| Explicabilite a l'ecran | parcours de 13 regles + 4 ecarts chiffres |
+| Referentiel a l'ecran | 4 marches, 26 regles, 5 onglets, empreinte affichee |
+| Fiche de decision | rendue, **0 ressource externe**, CSS d'impression actif |
+| Console navigateur | aucune erreur |
+| Journal d'audit reel | 72 entrees, chaine et ancre intactes |
+
+## Resultat
+
+L'application ne se contente plus de classer : elle **explique** sa decision,
+la **documente** dans un justificatif archivable portant la version exacte des
+regles appliquees, et **donne acces au referentiel** qui la fonde. Les trois
+apports reposent exclusivement sur des informations deja produites par le
+systeme, ce qui garantit l'absence totale d'impact sur la logique metier.
 ---
 
 *Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les

@@ -13,7 +13,11 @@ Usage typique dans l'application :
     from presentation import afficher_reponse
     afficher_reponse(chatbot.repondre(question))
 """
+from .fiche import generer_fiche_html
 from .plan import planifier_reponse
 from .rendu import afficher_reponse, injecter_css_rendu
 
-__all__ = ["planifier_reponse", "afficher_reponse", "injecter_css_rendu"]
+__all__ = [
+    "planifier_reponse", "afficher_reponse", "injecter_css_rendu",
+    "generer_fiche_html",
+]
