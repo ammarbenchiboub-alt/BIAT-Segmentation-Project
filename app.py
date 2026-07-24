@@ -32,6 +32,9 @@ from presentation import afficher_reponse, generer_fiche_html, injecter_css_rend
 from explicabilite import ecarts_atteignables, parcours_decision
 import referentiel as ref
 from commun import en_dinars
+from analyse_portefeuille import (
+    analyser, construire_portefeuille, avec_anomalies_ml, MIX_MARCHE, N_DEFAUT,
+)
 from auth import authentifier
 from audit import enregistrer as enregistrer_audit, enregistrer_lot as enregistrer_audit_lot
 from audit import lister as lister_audit, compter as compter_audit, verifier_integrite as verifier_integrite_audit
@@ -131,6 +134,17 @@ def get_moteur() -> MoteurSegmentation:
     return _construire_moteur(empreinte_regles())
 
 
+@st.cache_data(show_spinner="Construction du portefeuille representatif...")
+def _analyse_portefeuille(empreinte: str):
+    """Portefeuille representatif (simule) segmente + analyse. Mis en cache :
+    la generation et la segmentation de plusieurs milliers de profils sont
+    couteuses. La clef inclut l'empreinte des regles : si les seuils changent,
+    l'analyse est automatiquement recalculee. Lecture seule (aucun impact sur le
+    moteur ni les regles)."""
+    portefeuille = avec_anomalies_ml(construire_portefeuille())
+    return portefeuille, analyser(portefeuille)
+
+
 if "historique" not in st.session_state:
     st.session_state.historique = pd.DataFrame()
 
@@ -154,11 +168,12 @@ def ajouter_historique(lignes: list[dict]) -> None:
 _ROLE = st.session_state.auth["role"]
 
 _PAGES = ["Accueil", "Simulation individuelle", "Import CSV",
-          "Chatbot Expert", "Tableau de bord", "Referentiel", "Parametrage"]
+          "Chatbot Expert", "Tableau de bord", "Analyse portefeuille",
+          "Referentiel", "Parametrage"]
 _ICONES_PAGES = {
     "Accueil": "🏠", "Simulation individuelle": "🧮", "Import CSV": "📂",
-    "Chatbot Expert": "💬", "Tableau de bord": "📊", "Referentiel": "📚",
-    "Parametrage": "⚙️", "Journal d'audit": "🛡️",
+    "Chatbot Expert": "💬", "Tableau de bord": "📊", "Analyse portefeuille": "📈",
+    "Referentiel": "📚", "Parametrage": "⚙️", "Journal d'audit": "🛡️",
 }
 if _ROLE != "admin":
     # Parametrage des seuils reserve au role admin (modification des regles
@@ -667,6 +682,77 @@ elif page == "Tableau de bord":
             if st.button("Vider l'historique"):
                 st.session_state.historique = pd.DataFrame()
                 st.rerun()
+
+
+# --------------------------------------------------------------------------- #
+# Analyse portefeuille (analyse de structure, question metier -> reco)
+# --------------------------------------------------------------------------- #
+elif page == "Analyse portefeuille":
+    entete_biat("Analyse de portefeuille", "Structure de la clientele PBD et concentration de la valeur")
+    st.info(
+        "En l'absence de donnees clients reelles, l'analyse porte sur un "
+        f"**portefeuille representatif simule** de {N_DEFAUT} clients "
+        "(reproductible), **segmente par le moteur officiel**. Les profils sont "
+        "simules ; les segments sont reels. Rapport complet : `docs/ANALYSE_PORTEFEUILLE.md`.",
+        icon="ℹ️",
+    )
+
+    _pf, _a = _analyse_portefeuille(_EMPREINTE_REGLES)
+
+    section("Question metier")
+    st.markdown(
+        "**Comment se structure le portefeuille PBD, ou se concentre la valeur, "
+        "et quels leviers commerciaux en decoulent ?**"
+    )
+
+    section("Indicateurs cles")
+    d1, d2, d3, d4 = st.columns(4)
+    with d1:
+        kpi("Clients analyses", f"{_a['n_clients']:,}".replace(",", " "), "portefeuille simule", icone="👥")
+    with d2:
+        kpi("Part de valeur", f"{_a['part_valeur']:g} %", "Haut de Gamme / Premium", icone="💎")
+    with d3:
+        kpi("Concentration (top 10 %)", f"{_a['concentration_top10']:g} %", f"des avoirs · Gini {_a['gini_avoirs']:g}", icone="📈")
+    with d4:
+        kpi("Marche de masse", f"{_a['part_masse']:g} %", "Grand Public / Faible potentiel", icone="🏦")
+
+    section("Repartition par segment")
+    legende_segments([s for s in COULEURS if s != "-"])
+    _rep = repartition(_pf, "Segment")
+    st.bar_chart(_rep.set_index("Segment"))
+    st.caption(
+        f"Pyramide classique : base large de clientele de masse ({_a['part_masse']:g} %), "
+        f"sommet etroit de forte valeur ({_a['part_valeur']:g} %). "
+        f"Les Jeunes : {_a['part_potentiel']:g} % (potentiel futur)."
+    )
+
+    section("Croisement marche x segment")
+    _ct = pd.DataFrame(_a["croise_marche_segment"]).T.fillna(0).round(1)
+    st.dataframe(_ct, use_container_width=True)
+    st.caption("Part (%) de chaque segment au sein de chaque marche.")
+
+    section("Concentration des avoirs")
+    e1, e2, e3 = st.columns(3)
+    with e1:
+        kpi("Top 10 % des clients", f"{_a['concentration_top10']:g} %", "des avoirs detenus", icone="🥇")
+    with e2:
+        kpi("Top 20 % des clients", f"{_a['concentration_top20']:g} %", "des avoirs detenus", icone="🥈")
+    with e3:
+        kpi("Indice de Gini", f"{_a['gini_avoirs']:g}", "0 = egalite, 1 = concentration", icone="⚖️")
+
+    section("Constats")
+    for _c in _a["constats"]:
+        st.markdown(f"- {_c}")
+
+    section("Recommandations")
+    st.caption("Chaque recommandation est declenchee par un chiffre du portefeuille.")
+    for _r in _a["recommandations"]:
+        st.markdown(
+            f"<div class='smart-callout' style='border-color:#1E73B8;"
+            f"border-left-color:#1E73B8;background:#EEF5FC;'>"
+            f"<span class='ic'>💡</span><span>{_r}</span></div>",
+            unsafe_allow_html=True,
+        )
 
 
 # --------------------------------------------------------------------------- #

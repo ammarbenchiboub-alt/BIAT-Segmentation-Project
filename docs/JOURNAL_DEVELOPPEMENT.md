@@ -68,6 +68,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 18 | Preuve automatique de conformite metier | Qualite logicielle / Valorisation |
 | 19 | Validation de la regle PRO_HDG_PROFESSIONNELS_POTENTIEL (jury 2) | Conformite / Gouvernance documentaire |
 | 20 | Evaluation rigoureuse du modele ML (jury 3, Phase 1) | Machine Learning / Valorisation |
+| 21 | Analyse de portefeuille : de l'outil a l'analyse (jury 4) | Business Analytics / Valorisation |
 
 ---
 ---
@@ -2969,6 +2970,167 @@ comparaison a une baseline, justification chiffree de contamination, limites
 documentees, le tout reproductible et verrouille par des tests. La troisieme
 remarque du jury est traitee, sans aucune modification du modele, du moteur ni
 des regles.
+---
+---
+
+# Note 21 — Analyse de portefeuille : de l'outil a l'analyse (remarque jury 4)
+
+> **Origine** : quatrieme remarque du jury. Le projet livrait un OUTIL
+> (segmenter, chatter, importer) mais aucune ANALYSE : ni distribution du
+> portefeuille, ni constat chiffre, ni recommandation a la banque. Pour un
+> master Business Analytics, c'est la distinction entre un logiciel et une
+> demarche analytique.
+>
+> Perimetre valide par l'utilisateur : portefeuille representatif SIMULE ;
+> livrable = module + rapport + tests + page tableau de bord.
+
+## Probleme identifie
+
+Le tableau de bord n'affichait que les donnees de la session courante (souvent
+vide). Il manquait une question metier explicite, une analyse chiffree de la
+structure du portefeuille, et des recommandations exploitables.
+
+## Analyse
+
+Il n'existe aucune donnee client reelle BIAT. La demarche honnete consiste a
+analyser un portefeuille REPRESENTATIF SIMULE, mais **segmente par le moteur
+officiel** : les profils sont simules, les segments sont reels. On enonce une
+question metier, on produit des indicateurs, on en tire des recommandations
+justifiees par les chiffres.
+
+Difficulte rencontree et resolue : une premiere calibration donnait 38 % de
+Haut de Gamme -- irrealiste. La cause n'etait pas les montants mais le mix de
+PROFESSIONS (trop d'ingenieurs/magistrats, qui qualifient HG par profession
+independamment du montant). Ponderer les professions de maniere realiste
+(majorite « Autre »/salaries) a produit une pyramide credible.
+
+## Solution retenue
+
+Paquet `analyse_portefeuille/` (lecture seule : segmente via le moteur, ne le
+modifie pas, ne touche ni les regles ni les resultats) :
+
+  - `portefeuille.py` : generation d'un portefeuille representatif (mix de
+    marche et professions ponderees, montants log-normaux calibres, graine
+    fixee) puis segmentation par le moteur officiel. Hypotheses explicites.
+  - `analyse.py` : indicateurs de structure -- repartition par segment et par
+    marche, croisement marche x segment, parts strategiques (valeur / potentiel
+    / masse), CONCENTRATION DES AVOIRS (part du decile superieur, top 20 %,
+    indice de Gini), superposition du taux d'anomalies ML ; + constats et
+    recommandations generes A PARTIR des chiffres (jamais codes en dur).
+  - `rapport.py` : rapport Markdown genere (`docs/ANALYSE_PORTEFEUILLE.md`).
+
+Integration : nouvelle page « Analyse portefeuille » (tableau de bord), avec
+KPI, graphique de repartition, croisement, concentration et recommandations.
+Le portefeuille est mis en cache (clef = empreinte des regles).
+
+## Resultats de l'analyse (portefeuille simule de 8 000 clients)
+
+Question metier : « Comment se structure le portefeuille PBD, ou se concentre
+la valeur, et quels leviers en decoulent ? »
+
+  - **Pyramide** : masse (Grand Public / Faible potentiel) 42,3 % ; classe
+    intermediaire ~26 % ; sommet de valeur (Haut de Gamme / Premium) 8,7 %.
+  - **Concentration des avoirs** : le decile superieur detient **41,8 %** des
+    encours, le top 20 % **58,8 %**, indice de **Gini 0,548** -- distribution
+    fortement inegalitaire, constat classique en banque de detail.
+  - **Nuance honnete** : les segments de valeur (8,7 % des clients) ne
+    detiennent que 12,1 % des avoirs, car une partie est qualifiee par la
+    PROFESSION et non par les montants -- valeur relationnelle et valeur
+    patrimoniale ne se recouvrent pas totalement.
+  - **Les Jeunes** : 22,7 % (potentiel futur).
+  - **TRE/ENR** : majoritairement faible potentiel (jusqu'a 94 %).
+
+Recommandations derivees (chacune declenchee par un chiffre) : securiser la
+clientele patrimoniale concentree ; montee en gamme du marche de masse ;
+fidelisation precoce des Jeunes ; arbitrage sur les marches TRE/ENR ; controle
+qualite des donnees (11,4 % d'anomalies ML).
+
+## Justification technique
+
+**Pourquoi un portefeuille simule plutot que le journal d'audit ?**
+Le journal ne contient que ~72 entrees de test, non representatives. Un
+portefeuille simule, clairement etiquete, permet une analyse de structure
+credible et reproductible. La METHODE est transposable a des donnees reelles.
+
+**Pourquoi la concentration par decile / Gini plutot que par segment ?**
+La concentration par segment (12,1 %) est trompeuse car les segments de valeur
+melent qualification par montant et par profession. Le decile superieur et le
+Gini mesurent la concentration PATRIMONIALE reelle, independamment de la
+segmentation -- indicateurs robustes et standard.
+
+**Pourquoi generer les recommandations depuis les chiffres ?**
+Pour qu'elles restent honnetes et a jour : chaque recommandation est declenchee
+par un seuil sur un indicateur reel, jamais posee a priori. Si la structure
+change, les recommandations changent.
+
+**Pourquoi ponderer les professions ?**
+Sans ponderation realiste, la part de Haut de Gamme etait irrealiste (les
+professions a potentiel qualifient HG independamment du montant). La ponderation
+est une hypothese explicite, documentee dans le code.
+
+## Fichiers modifies
+
+- `analyse_portefeuille/portefeuille.py`, `analyse.py`, `rapport.py`,
+  `__init__.py` (creations)
+- `docs/ANALYSE_PORTEFEUILLE.md` (rapport genere)
+- `app.py` : page « Analyse portefeuille » + navigation + fonction cachee
+- `tests/test_analyse_portefeuille.py` (creation), `tests/run_all.py`
+
+Aucune modification du moteur, des regles, du modele ML ni du jeu de test.
+
+## Impact
+
+- **Securite / robustesse du moteur** : aucun (paquet en lecture, decouple).
+- **Maintenabilite** : analyse verrouillee par tests ; rapport regenerable en
+  une commande ; recommandations derivees des chiffres.
+- **Valorisation (jury)** : gain principal. Le projet passe d'« outil » a
+  « analyse » : question metier -> indicateurs -> recommandations, demontrable
+  en direct (page dediee) et par un rapport reproductible.
+- **Experience utilisateur** : la demonstration ne demarre plus sur un ecran
+  vide ; une page d'analyse de portefeuille est disponible immediatement.
+
+## Compatibilite
+
+- `core/engine.py`, `config/regles_segmentation.json`, `core/ml_anomaly.py`,
+  `.joblib` : **inchanges**.
+- Empreinte des 715 008 profils : **identique** (`19789b84...54e8`).
+- Les segments analyses sont ceux du moteur (verifie par test : un profil du
+  portefeuille redonne le meme segment via un appel direct au moteur).
+- Suite : **15 suites, 476/476 assertions**.
+
+## Bonnes pratiques utilisees
+
+- **Question metier -> analyse -> recommandation** (demarche BA, pas seulement
+  un outil).
+- **Concentration mesuree par indicateurs robustes** (Pareto, Gini).
+- **Recommandations pilotees par les donnees**, jamais codees en dur.
+- **Honnetete** : donnees simulees clairement etiquetees, hypotheses explicites,
+  ecart valeur-segment / valeur-patrimoniale expose plutot que masque.
+- **Reproductibilite** (graine fixee) et **verrouillage par tests**.
+- **Separation stricte** : paquet d'analyse en lecture seule, decouple du
+  moteur.
+
+## Tests effectues
+
+`tests/test_analyse_portefeuille.py` — **24 assertions** : portefeuille de
+plusieurs milliers de clients, mix PART majoritaire, segments issus du moteur
+(verification independante), repartition sommant a 100 %, pyramide credible
+(masse > valeur), Haut de Gamme minoritaire, concentration reelle (top 10 %
+> proportionnel, Gini dans ]0,1[), croisement coherent, constats et
+recommandations non vides et chiffres, determinisme, garanties structurelles
+(pas d'ecriture des regles, pas de reentrainement ML).
+
+Verification en direct : page « Analyse portefeuille » rendue dans
+l'application (KPI, graphique, croisement, concentration Gini 0,548, 5
+recommandations chiffrees), aucune erreur console.
+
+## Resultat
+
+Le projet dispose desormais d'une veritable ANALYSE de portefeuille :
+distribution, concentration de la valeur (Gini, Pareto), constats chiffres et
+recommandations metier, presentee dans une page dediee et un rapport
+reproductible. La quatrieme remarque du jury est traitee, sans aucune
+modification du moteur, des regles ni des resultats de segmentation.
 ---
 
 *Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les

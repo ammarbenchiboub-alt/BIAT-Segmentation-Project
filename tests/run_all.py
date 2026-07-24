@@ -19,6 +19,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import test_analyse_portefeuille
 import test_audit
 import test_auth
 import test_cache
@@ -49,6 +50,7 @@ SUITES = [
     ("Smart Response Renderer (presentation)", test_presentation.run),
     ("Explicabilite & fiche de decision", test_explicabilite.run),
     ("Referentiel BIAT (source unique)", test_referentiel.run),
+    ("Analyse de portefeuille (structure & recommandations)", test_analyse_portefeuille.run),
 ]
 
 
