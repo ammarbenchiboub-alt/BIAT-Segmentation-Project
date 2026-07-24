@@ -66,6 +66,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 16 | Smart Response Renderer : moteur de rendu intelligent du chatbot | Experience utilisateur / Architecture |
 | 17 | Explicabilite, fiche de decision et referentiel consultable | Explicabilite / Tracabilite / Gouvernance |
 | 18 | Preuve automatique de conformite metier | Qualite logicielle / Valorisation |
+| 19 | Validation de la regle PRO_HDG_PROFESSIONNELS_POTENTIEL (jury 2) | Conformite / Gouvernance documentaire |
 
 ---
 ---
@@ -2642,6 +2643,163 @@ produit, pour chacun des cas de la note, exactement le resultat attendu, et
 l'integralite des 26 regles est couverte. Cette preuve est distincte de la
 non-regression et la complete : l'une atteste que le moteur ne change pas,
 l'autre qu'il a raison.
+---
+---
+
+# Note 19 — Validation de la regle PRO_HDG_PROFESSIONNELS_POTENTIEL (remarque jury 2)
+
+> **Origine** : deuxieme remarque du jury. La regle
+> PRO_HDG_PROFESSIONNELS_POTENTIEL etait active mais documentee comme
+> « A_CONFIRMER / PROVISOIRE / EN ATTENTE DE VALIDATION », ce qui semblait
+> contredire le principe fondateur « aucune regle inventee ». Cette note acte
+> sa validation apres verification contre la note officielle, par une mise a
+> jour STRICTEMENT DOCUMENTAIRE.
+
+## Probleme identifie
+
+La regle qualifie automatiquement « Haut de Gamme / Professionnels » (marche
+PRO) un client exercant une profession a potentiel hors PL, independamment du
+montant. Elle etait etiquetee provisoire, faute d'avoir pu etre confrontee au
+document officiel : la note n'etait alors disponible que sous forme de
+transcription markdown, pas de PDF.
+
+Un jury lisant les `_notes_conflits` (desormais exposees dans la page
+Referentiel) aurait legitimement pose la question : cette regle est-elle fondee
+sur la note, ou est-ce une interpretation ?
+
+## Analyse
+
+Le PDF officiel de la note ayant ete fourni, la regle a ete auditee page par
+page (rapport d'audit complet en amont de cette note) :
+
+  - **Table PART & PRO (page 3)** : la ligne PRO/Haut de Gamme/Professionnels
+    est definie par TROIS criteres alternatifs en OU, colonnes explicitement
+    separees par « OU » dans l'en-tete du tableau : Revenus (MMM) >= 100 mD OU
+    Total avoirs (VRD) >= 200 mD OU « Professions a potentiel hors PL : liste en
+    annexe 4 ». Le critere profession est donc, dans la note elle-meme, un
+    troisieme terme du OU, au meme rang que les montants.
+  - **Annexe 4 (page 20)** : deux boites. La boite (a) « Professionnels HG » est
+    entierement composee de professions liberales -> vide une fois « hors PL »
+    applique. Seule la boite (b) « Salaries » laisse un reste non-PL :
+    Magistrats, Enseignants universitaires, Chefs de mission diplomatique,
+    Hauts fonctionnaires, Pilotes et officiers de pont.
+  - **Annexe 5 (page 22)** : liste des professions liberales, confirmant le
+    perimetre « hors PL ».
+
+La regle utilise la liste `professions_a_potentiel_salaries_annexe4`
+(= annexe 4 boite b) ; ses membres liberaux sont pre-captes par la regle
+PRO_HDG_PL (priorite 20), si bien que l'effet net correspond exactement aux
+professions hors PL de la note.
+
+**Verdict d'audit : la regle est CONFORME a la note. Elle n'est pas inventee.**
+
+Reserve mineure documentee (n'affecte ni le verdict ni le segment) : un ecart
+de libelle entre annexe 4 (« Medecins (fonction publique et assimiles en cas de
+resident) ») et annexe 5 (« Medecins de la fonction publique et assimiles »)
+fait classer ce medecin en sous-segment « Professionnels » plutot que
+« Professions Liberales » sur PRO. Meme segment (Haut de Gamme) dans les deux
+cas ; point de coherence de listes distinct, non traite ici.
+
+## Solution retenue (STRICTEMENT DOCUMENTAIRE)
+
+Decision de l'utilisateur, apres validation par l'encadrante academique :
+**option A — maintenir la regle**, et requalifier sa documentation.
+
+Modifications, toutes documentaires :
+
+  1. `_notes_conflits` : cle `pro_professionnels_hors_pl_A_CONFIRMER` renommee en
+     `..._CONFIRME` ; valeur reecrite en « CONFIRME PAR NOTE BIAT (Page 3 +
+     Annexe 4 p.20) », avec le detail de la verification et la reserve mineure.
+     Le langage provisoire (« EN ATTENTE DE VALIDATION », « provisoirement ») est
+     retire.
+  2. Champ `commentaire` de la regle PRO_HDG_PROFESSIONNELS_POTENTIEL : « PROVISOIRE,
+     en attente de validation » remplace par « CONFIRME PAR NOTE BIAT (Page 3 +
+     Annexe 4 p.20) ».
+
+## Justification technique
+
+**Pourquoi ces edits ne modifient PAS les regles metier.**
+Le moteur (`core/engine.py`) lit exclusivement, pour chaque regle, les champs
+`id`, `segment`, `sous_segment`, `priorite` et `conditions`. Il ne lit ni
+`_notes_conflits` (bloc de meta-documentation, prefixe par un underscore) ni le
+champ `commentaire`. Les deux edits ne touchent donc aucune donnee lue par le
+moteur : aucun seuil, aucune liste, aucune priorite, aucun segment. La logique
+metier est byte-identique.
+
+**Preuve.** Le controle de non-regression des 715 008 profils donne une
+empreinte SHA-256 STRICTEMENT IDENTIQUE avant et apres
+(`19789b84...54e8`). Aucun resultat de segmentation n'a change.
+
+**Consequence assumee et transparente.** Le contenu du FICHIER de regles ayant
+change, son empreinte (`core.rules_loader.empreinte_regles`, qui hache le
+fichier entier) passe de `ff386d5ce8bd8013` a `f72b74f80dc38ec8`. Cette
+empreinte est un IDENTIFIANT DE VERSION, pas un resultat de segmentation : elle
+sera affichee dans la page Referentiel et enregistree comme version des regles
+pour les futures decisions du journal d'audit. C'est le comportement correct —
+le fichier est bel et bien dans une nouvelle version documentaire.
+
+**Ce qui n'a PAS ete modifie, deliberement.**
+  - L'archive de version `config/versions/regles_20260709T084710Z_initiale.json`
+    conserve l'ancien texte : une archive de version est immuable par principe
+    (meme logique que le journal d'audit append-only). La reecrire falsifierait
+    l'historique.
+  - Le jeu de test livre conserve « PROVISOIRE » dans le libelle du cas L17. Ce
+    fichier est binaire (.xlsx avec listes deroulantes) ; le reecrire risquerait
+    d'alterer ces listes. L'annotation y est purement cosmetique : le test de
+    conformite retire les parentheses avant comparaison. La source de verite
+    (JSON `_notes_conflits`) porte, elle, le statut CONFIRME.
+
+## Fichiers modifies
+
+- `config/regles_segmentation.json` — 2 lignes de documentation uniquement
+  (`_notes_conflits` + `commentaire` de la regle). Aucune regle metier touchee.
+- `docs/JOURNAL_DEVELOPPEMENT.md` — cette note.
+
+## Impact
+
+- **Securite / performances / robustesse** : aucun.
+- **Gouvernance** : le statut de la regle passe de « provisoire » a « confirme,
+  source citee », renforcant la tracabilite documentaire.
+- **Maintenabilite** : la documentation reflete desormais l'etat reel (regle
+  validee contre la note).
+- **Valorisation (jury)** : la remarque n 2 est levee ; le principe « aucune
+  regle inventee » est desormais verifie ET documente pour cette regle.
+- **Experience utilisateur** : la page Referentiel affiche desormais le statut
+  CONFIRME au lieu de la mention en attente.
+
+## Compatibilite
+
+- `core/engine.py` : **inchange** (toujours un seul commit depuis l'origine).
+- **Regles metier** (marches / regles / listes / seuils / priorites / segments)
+  du JSON : **byte-identiques**. Seule la documentation du fichier a change.
+- Empreinte des 715 008 profils : **identique** (`19789b84...54e8`).
+- Suite complete : **13 suites, 432/432 assertions**.
+
+## Bonnes pratiques utilisees
+
+- **Verification contre la source primaire** (le PDF officiel) avant toute
+  requalification.
+- **Separation documentation / logique** : seuls les blocs de documentation du
+  JSON sont touches ; la logique reste inviolee, prouve par non-regression.
+- **Immuabilite des archives** : la version historique n'est pas reecrite.
+- **Transparence** sur la consequence (changement d'empreinte de fichier) et sur
+  ce qui reste (annotation cosmetique du jeu de test).
+
+## Tests effectues
+
+- Non-regression 715 008 profils : empreinte identique.
+- Suite complete : 13/13 suites, 432/432 assertions, dont la suite de
+  conformite (le cas L17 « Magistrats » reste conforme, la regle etant
+  maintenue).
+- Verification que le JSON reste valide et que le noyau metier (marches +
+  listes, hors documentation) est inchange.
+
+## Resultat
+
+La regle PRO_HDG_PROFESSIONNELS_POTENTIEL est officiellement validee et
+documentee comme CONFORME a la Note BIAT (page 3 + annexe 4 p.20). La deuxieme
+remarque du jury est traitee, sans aucune modification du moteur ni des regles
+metier, et sans le moindre changement des resultats de segmentation.
 ---
 
 *Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les
