@@ -24,6 +24,7 @@ import test_auth
 import test_cache
 import test_chatbot
 import test_concurrence
+import test_conformite
 import test_gouvernance
 import test_explicabilite
 import test_import
@@ -34,6 +35,7 @@ import test_referentiel
 
 SUITES = [
     ("Moteur de segmentation (non-regression metier)", test_moteur.run),
+    ("Conformite metier a la Note BIAT 2023-06", test_conformite.run),
     ("Authentification & protection force brute", test_auth.run),
     ("Integrite du journal d'audit", test_audit.run),
     ("Gouvernance : Maker-Checker & transactionnel", test_gouvernance.run),

@@ -65,6 +65,7 @@ cryptographique des resultats de segmentation sur 715 008 profils.
 | 15 | Import Excel multi-feuilles et finition de l'interface | Correction / UX |
 | 16 | Smart Response Renderer : moteur de rendu intelligent du chatbot | Experience utilisateur / Architecture |
 | 17 | Explicabilite, fiche de decision et referentiel consultable | Explicabilite / Tracabilite / Gouvernance |
+| 18 | Preuve automatique de conformite metier | Qualite logicielle / Valorisation |
 
 ---
 ---
@@ -2483,6 +2484,164 @@ la **documente** dans un justificatif archivable portant la version exacte des
 regles appliquees, et **donne acces au referentiel** qui la fonde. Les trois
 apports reposent exclusivement sur des informations deja produites par le
 systeme, ce qui garantit l'absence totale d'impact sur la logique metier.
+---
+---
+
+# Note 18 — Preuve automatique de conformite metier
+
+> **Origine** : premiere remarque du jury de PFE. La suite de tests prouvait
+> l'absence de REGRESSION, pas la CONFORMITE du moteur a la note. Ce point y
+> repond, sans modifier ni le moteur ni les regles.
+
+## Probleme identifie
+
+Le controle des 715 008 profils (Note 08) compare le moteur A LUI-MEME, via une
+empreinte de son comportement anterieur. Il prouve rigoureusement que ce
+comportement n'a pas change — mais **pas qu'il est correct**. Un moteur
+systematiquement faux passerait ce controle sans broncher, du moment qu'il
+reste stable.
+
+Un jury de Business Analytics fait precisement cette distinction. A la question
+« comment prouvez-vous que votre moteur implemente la note ? », le projet
+n'avait, en l'etat, aucune reponse opposable.
+
+Element aggravant : le jeu de test livre (`Jeu_de_test_segmentation_BIAT.xlsx`)
+contenait deja une colonne `Cas_attendu` — le resultat metier attendu pour
+chaque cas — mais **aucun code ne l'exploitait**. L'oracle existait, inutilise.
+
+## Analyse
+
+Une preuve de conformite exige de confronter le moteur a une reference qui n'est
+PAS issue du moteur. La colonne `Cas_attendu` remplit cette condition :
+
+  - **independante du code** : redigee a la main a partir de la lecture de la
+    note, et non generee par le moteur. Si le moteur etait faux, elle resterait
+    juste — c'est ce qui distingue un oracle d'une simple photographie du
+    comportement ;
+  - **tracable a la note** : un cas par regle, chacun rattachable a un palier de
+    la Note BIAT 2023-06 ;
+  - **couvrante** : le fichier annonce « un cas par regle de segmentation ».
+
+Le jeu de test melange toutefois trois natures de cas, qu'il fallait distinguer
+pour ne pas prouver ce qui ne releve pas du moteur :
+
+  - **metier** (28 cas) : un segment/sous-segment precis est attendu ;
+  - **invalide** (3 cas) : profils volontairement fautifs (marche non gere, age
+    negatif, montant manquant), qui doivent etre REJETES par la validation ;
+  - **ML** (2 cas) : profils atypiques relevant du module de detection
+    d'anomalies, complementaire et jamais decisionnaire.
+
+## Solution retenue
+
+Nouvelle suite `tests/test_conformite.py`, integree au lanceur, qui pour chaque
+ligne du jeu de test officiel :
+
+  1. lit le profil ET le libelle `Cas_attendu`, et classe la ligne
+     (metier / invalide / ML) ;
+  2. **metier** : fait segmenter le profil par le moteur et compare STRICTEMENT
+     au segment/sous-segment attendu. Toute divergence fait ECHOUER la suite,
+     en nommant le cas concerne (donc rattachable a la note) ;
+  3. **invalide** : verifie que la validation produit bien des erreurs ;
+  4. **ML** : verifie seulement que le cas est identifie et EXCLU du perimetre
+     de conformite du moteur ;
+  5. **couverture** : verifie que CHAQUE regle du moteur est exercee par au
+     moins un cas metier (26/26). On ne peut donc pas ajouter une regle sans lui
+     adjoindre un cas de conformite, sous peine de faire echouer ce controle.
+
+## Justification technique
+
+**En quoi est-ce une preuve, et pas un test de plus ?**
+
+  - **Falsifiable** — verifie explicitement : rendre une regle non conforme
+    (seuil Fortunes porte de 500 a 900 mD) fait immediatement echouer le test,
+    la ou la non-regression ne verrait rien (elle ignore la note). C'est la
+    propriete qui donne au test sa valeur probante.
+  - **Reproductible** — une commande, un verdict binaire (« 28/28 conforme,
+    26/26 regles couvertes »), rejouable devant un jury.
+  - **Lisible** — en cas d'ecart, le message nomme le cas et le libelle attendu
+    de la note, directement rattachable au document officiel.
+  - **Auto-verifiante sur la couverture** — le test echoue si une regle du
+    moteur n'est exercee par aucun cas.
+
+**Pourquoi l'echec strict plutot qu'un avertissement ?**
+Un test de conformite qui « passe quand meme » en cas d'ecart perd toute valeur
+de preuve : un moteur non conforme le franchirait. L'echec strict est ce qui
+autorise a affirmer, devant le jury, que le moteur EST conforme des lors que la
+suite passe.
+
+**Pourquoi separer les trois familles de cas ?**
+Par honnetete methodologique. Comparer un cas « ML » au moteur reviendrait a lui
+reprocher de ne pas faire ce qu'il ne doit pas faire (le ML est complementaire).
+Ignorer les cas invalides laisserait croire que le jeu de test n'en contient
+pas. Chaque famille est donc traitee selon ce qu'elle est censee demontrer.
+
+**Portee exacte de la preuve, sans surpromesse.**
+L'oracle `Cas_attendu` a ete redige par l'auteur du projet a partir de sa
+lecture de la note, non certifie par la BIAT. Le test prouve donc que le moteur
+est conforme A CETTE LECTURE de la note, telle que consignee dans le jeu de
+test — ce qu'un jury de PFE attend, et qui doit etre formule ainsi plutot que
+comme une « certification bancaire ».
+
+## Fichiers modifies
+
+- `tests/test_conformite.py` (creation)
+- `tests/run_all.py` — integration, placee juste apres la non-regression pour
+  souligner la complementarite des deux controles
+
+Aucun autre fichier. Ni le moteur, ni les regles, ni le jeu de test ne sont
+modifies : le test ne fait que lire et comparer.
+
+## Impact
+
+- **Securite / gouvernance** : sans objet direct.
+- **Performances** : negligeable (33 segmentations).
+- **Maintenabilite** : la couverture obligatoire lie desormais toute nouvelle
+  regle a un cas de conformite.
+- **Robustesse** : un ecart de conformite, jusque-la invisible, est desormais
+  detecte.
+- **Valorisation (jury)** : gain principal. Le projet peut demontrer non
+  seulement la stabilite du moteur, mais sa CORRECTION vis-a-vis de la note,
+  cas par cas, avec couverture complete des 26 regles.
+
+## Compatibilite
+
+- `core/engine.py` et `config/regles_segmentation.json` : **inchanges** (un seul
+  commit chacun depuis l'origine).
+- Empreinte des 715 008 profils **inchangee** : `19789b84...54e8`.
+- Les 12 suites preexistantes passent sans modification.
+
+## Bonnes pratiques utilisees
+
+- **Test par oracle externe** (conformite), distinct du test de caracterisation
+  (non-regression).
+- **Falsifiabilite verifiee** : on s'assure que le test echoue quand il le doit.
+- **Couverture liee au referentiel** : impossible d'ajouter une regle non
+  testee.
+- **Formulation honnete de la portee** de la preuve.
+
+## Tests effectues
+
+`tests/test_conformite.py` — **41 assertions** :
+
+  - 28 cas metier compares STRICTEMENT au moteur, tous conformes ;
+  - couverture 26/26 regles du moteur exercees ;
+  - 3 cas invalides confirmes rejetes par la validation ;
+  - 2 cas ML identifies et exclus ;
+  - classement exhaustif des 33 lignes du jeu de test.
+
+Verification de falsifiabilite (hors suite) : une regle rendue non conforme
+declenche bien un echec.
+
+Suite complete : **13 suites, 432/432 assertions**. Non-regression des 715 008
+profils maintenue.
+
+## Resultat
+
+Le projet dispose desormais d'une preuve de conformite reproductible : le moteur
+produit, pour chacun des cas de la note, exactement le resultat attendu, et
+l'integralite des 26 regles est couverte. Cette preuve est distincte de la
+non-regression et la complete : l'une atteste que le moteur ne change pas,
+l'autre qu'il a raison.
 ---
 
 *Les notes sont ajoutees a la suite, sans jamais modifier ni supprimer les
